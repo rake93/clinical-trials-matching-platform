@@ -6,6 +6,7 @@ import LeftPane from "./components/LeftPane";
 import type { QueryHistoryItem, PatientRecord } from "./components/LeftPane";
 import QueryPane from "./components/QueryPane";
 import IngestionPane from "./components/IngestionPane";
+import type { ActiveDocumentContext } from "./lib/api";
 
 const PANE_MIN = 160;
 const PANE_MAX = 520;
@@ -30,6 +31,7 @@ export default function App() {
   const [history, setHistory]           = useState<QueryHistoryItem[]>([]);
   const [patientRecord, setRecord]      = useState<PatientRecord>({ name: "", mrn: "", dob: "", chief: "", allergies: "", meds: "" });
   const [externalFill, setExternalFill] = useState<string | undefined>(undefined);
+  const [activeDocument, setActiveDocument] = useState<ActiveDocumentContext | null>(null);
   const dragStartX  = useRef(0);
   const dragStartW  = useRef(0);
 
@@ -171,6 +173,7 @@ export default function App() {
         <QueryPane
           clinicianMode={clinicianMode}
           externalFill={externalFill}
+          activeDocument={activeDocument}
           onQueryComplete={handleQueryComplete}
         />
 
@@ -249,7 +252,10 @@ export default function App() {
             transition: dragging ? "none" : "width 0.22s cubic-bezier(0.4,0,0.2,1)",
           }}
         >
-          <IngestionPane clinicianMode={clinicianMode} />
+          <IngestionPane
+            clinicianMode={clinicianMode}
+            onDocumentReady={setActiveDocument}
+          />
         </div>
       </div>
     </div>

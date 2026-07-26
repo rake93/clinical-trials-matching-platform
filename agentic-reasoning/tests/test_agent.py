@@ -12,7 +12,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.agent import Agent, LLMUnavailableError, _format_evidence, _NO_EVIDENCE_RESPONSE
+from src.agent import (
+    Agent,
+    LLMUnavailableError,
+    _format_evidence,
+    _NO_EVIDENCE_RESPONSE,
+    _strip_reasoning_block,
+)
 from src.config import AgentConfig, GraphRAGConfig, ModelParams
 from src.llm_factory import LLMEndpoint, LLMHealth
 
@@ -170,6 +176,43 @@ class TestPhase2Synthesis:
         agent.llm.stream.assert_not_called()
         assert "".join(tokens) == _NO_EVIDENCE_RESPONSE
 
+    def test_prepare_stream_rejects_empty_evidence(self):
+        agent = _make_agent(EVIDENCE_NO_RESULTS)
+
+        with pytest.raises(ValueError, match="without retrieved evidence"):
+            agent.prepare_synthesis_stream("unknown drug", EVIDENCE_NO_RESULTS)
+
+    def test_stream_suppresses_chunked_reasoning_block(self):
+        agent = _make_agent(EVIDENCE_WITH_RESULTS)
+        agent.llm.stream.return_value = iter(
+            [
+                MagicMock(content="<thi"),
+                MagicMock(content="nk>private reasoning"),
+                MagicMock(content="</think>"),
+                MagicMock(content="\n\n"),
+                MagicMock(content="Grounded"),
+                MagicMock(content=" answer"),
+            ]
+        )
+
+        prepared = agent.prepare_synthesis_stream("query", EVIDENCE_WITH_RESULTS)
+        visible = "".join(
+            event.text for event in prepared.events if event.type == "token"
+        )
+
+        assert visible == "Grounded answer"
+        assert "private reasoning" not in visible
+
+    def test_non_streaming_synthesis_suppresses_reasoning_block(self):
+        agent = _make_agent(EVIDENCE_WITH_RESULTS)
+        agent.llm.invoke.return_value = MagicMock(
+            content="<think>private reasoning</think>\n\nGrounded answer"
+        )
+
+        result = agent.synthesize("query", EVIDENCE_WITH_RESULTS)
+
+        assert result.text == "Grounded answer"
+
 
 class TestSynthesisFailover:
     def test_uses_fallback_after_primary_health_check_fails(self):
@@ -202,6 +245,50 @@ class TestSynthesisFailover:
             ],
         ), pytest.raises(LLMUnavailableError, match="Synthesis is unavailable"):
             agent.synthesize("query", EVIDENCE_WITH_RESULTS)
+
+    def test_stream_switches_to_fallback_before_first_token(self):
+        agent = _make_failover_agent()
+        agent.llm.stream.side_effect = ConnectionError("primary disconnected")
+        agent.fallback_llm.stream.return_value = iter(
+            [MagicMock(content="Fallback"), MagicMock(content=" answer")]
+        )
+
+        with patch(
+            "src.agent.check_llm_health",
+            side_effect=[
+                _health(agent.config.model, True),
+                _health(agent.config.fallback_model or "", True),
+            ],
+        ):
+            prepared = agent.prepare_synthesis_stream("query", EVIDENCE_WITH_RESULTS)
+            events = list(prepared.events)
+
+        assert prepared.model == "sglang/primary-model"
+        assert events[0].type == "meta"
+        assert events[0].model == "lmstudio/fallback-model"
+        assert events[0].fallback_used is True
+        assert "".join(event.text for event in events if event.type == "token") == "Fallback answer"
+
+    def test_stream_does_not_restart_after_partial_output(self):
+        agent = _make_failover_agent()
+
+        def failing_stream():
+            yield MagicMock(content="Partial")
+            raise ConnectionError("primary disconnected")
+
+        agent.llm.stream.return_value = failing_stream()
+
+        with patch(
+            "src.agent.check_llm_health",
+            return_value=_health(agent.config.model, True),
+        ):
+            prepared = agent.prepare_synthesis_stream("query", EVIDENCE_WITH_RESULTS)
+            events = prepared.events
+            assert next(events).text == "Partial"
+            with pytest.raises(LLMUnavailableError, match="stream failed"):
+                next(events)
+
+        agent.fallback_llm.stream.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -250,3 +337,6 @@ class TestFormatEvidence:
     def test_empty_evidence_returns_no_evidence_string(self):
         text = _format_evidence(EVIDENCE_NO_RESULTS)
         assert "No evidence" in text
+
+    def test_strip_reasoning_block_preserves_plain_answer(self):
+        assert _strip_reasoning_block("Grounded answer") == "Grounded answer"

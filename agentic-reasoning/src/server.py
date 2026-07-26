@@ -10,6 +10,7 @@ GET  /api/pdf/{doi_path} — Stream a raw PDF file
 GET  /api/debug/heatmap  — Sentence-level cosine similarity heatmap
 GET  /api/debug/subgraph — 1-hop Neo4j neighbourhood (D3 force graph)
 POST /api/synthesis      — Phase 2: LLM synthesis from cached evidence
+POST /api/synthesis/stream — Phase 2: token-streamed synthesis from cached evidence
 """
 from __future__ import annotations
 
@@ -20,12 +21,13 @@ import re
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -61,21 +63,25 @@ async def _get_agent() -> Any:
     return _agent
 
 
-# ── Evidence cache: store last 32 GraphRAG results keyed by normalised query ──
+# ── Evidence cache: opaque IDs prevent cross-context synthesis reuse ──────────
 
 _evidence_cache: OrderedDict[str, dict] = OrderedDict()
 _CACHE_MAX = 32
 
 
-def _cache_put(query: str, evidence: dict) -> None:
-    key = query.strip().lower()
-    _evidence_cache[key] = evidence
+def _cache_put(query: str, evidence: dict) -> str:
+    evidence_id = uuid4().hex
+    _evidence_cache[evidence_id] = {
+        "query": query,
+        "evidence": evidence,
+    }
     if len(_evidence_cache) > _CACHE_MAX:
         _evidence_cache.popitem(last=False)
+    return evidence_id
 
 
-def _cache_get(query: str) -> Optional[dict]:
-    return _evidence_cache.get(query.strip().lower())
+def _cache_get(evidence_id: str) -> Optional[dict]:
+    return _evidence_cache.get(evidence_id)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -121,6 +127,8 @@ def _graphrag_to_matches(evidence: dict) -> list[dict]:
                 "chunkIndex": hit.get("chunk_index", i),
                 "score": hit.get("score", 0),
                 "rankScore": hit.get("reranker_score"),
+                "collection": hit.get("collection"),
+                "scope": hit.get("scope"),
                 "source": source,
                 "content": hit.get("content", ""),
                 "context": hit.get("context") or "",
@@ -136,21 +144,78 @@ def _graphrag_to_matches(evidence: dict) -> list[dict]:
 @app.post("/api/match")
 async def match(
     query: str = Form(...),
+    target: Literal["literature", "patient_context"] = Form(default="literature"),
+    source: Optional[str] = Form(default=None),
+    source_slug: Optional[str] = Form(default=None),
+    top_k: int = Form(default=10, ge=1, le=50),
     file: Optional[UploadFile] = File(default=None),
 ) -> JSONResponse:
     """Phase 1 — GraphRAG hybrid retrieval. Returns matches for the UI."""
+    if target == "patient_context" and not source:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "source_required",
+                "message": "Patient-context retrieval requires an active document.",
+                "retryable": False,
+            },
+        )
+    if target == "literature" and (source or source_slug):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_retrieval_context",
+                "message": "Literature retrieval cannot include a patient source.",
+                "retryable": False,
+            },
+        )
+
     agent = await _get_agent()
     t0 = time.perf_counter()
+    retrieval_request = {
+        "query": query,
+        "target": target,
+        "source": source,
+        "source_slug": source_slug,
+        "limit": top_k,
+    }
 
     loop = asyncio.get_event_loop()
-    evidence = await loop.run_in_executor(None, agent.graphrag.cached_execute, query)
-    if not isinstance(evidence, dict):
-        evidence = {"found": False, "error": str(evidence)}
+    from .tools.graphrag import GraphRAGUnavailableError
 
-    _cache_put(query, evidence)
+    try:
+        evidence = await loop.run_in_executor(
+            None,
+            agent.graphrag.cached_execute,
+            retrieval_request,
+        )
+    except GraphRAGUnavailableError as exc:
+        logger.error(
+            "Retrieval unavailable: target=%s error=%s",
+            target,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "retrieval_unavailable",
+                "message": str(exc),
+                "retryable": True,
+            },
+        ) from exc
+    if not isinstance(evidence, dict):
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "invalid_retrieval_response",
+                "message": str(evidence),
+                "retryable": False,
+            },
+        )
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 1)
     matches = _graphrag_to_matches(evidence) if evidence.get("found") else []
+    evidence_id = _cache_put(query, evidence) if evidence.get("found") else None
 
     return JSONResponse(
         {
@@ -159,6 +224,9 @@ async def match(
             "matches": matches,
             "graphFacts": evidence.get("graph_facts", []),
             "graphAnchor": evidence.get("graph_anchor"),
+            "retrievalContext": evidence.get("retrieval_context"),
+            "empty": evidence.get("empty"),
+            "evidenceId": evidence_id,
             "latency_ms": latency_ms,
         }
     )
@@ -363,15 +431,24 @@ async def heatmap(query: str, chunk_index: int = 0) -> JSONResponse:
 
 
 @app.get("/api/debug/subgraph/{entity:path}")
-async def subgraph(entity: str) -> JSONResponse:
+async def subgraph(
+    entity: str,
+    target: Literal["literature", "patient_context"] = "literature",
+    source_slug: Optional[str] = None,
+) -> JSONResponse:
     """Return 1-hop Neo4j neighbourhood for an entity (D3 force-graph format)."""
+    if target == "patient_context" and not source_slug:
+        raise HTTPException(status_code=422, detail="source_slug is required")
     agent = await _get_agent()
     graphrag = agent.graphrag
     loop = asyncio.get_event_loop()
+    target_config = graphrag._target_config(target)
+    graph_source = f"{source_slug}_chunks" if source_slug else None
 
     cypher = """
         MATCH (h)-[r]->(t)
         WHERE r.scope = $scope
+          AND ($source IS NULL OR r.source = $source)
           AND (toLower(h.name) CONTAINS toLower($entity)
            OR toLower(t.name) CONTAINS toLower($entity)
           )
@@ -381,17 +458,20 @@ async def subgraph(entity: str) -> JSONResponse:
     """
 
     def _query() -> dict:
+        from neo4j.exceptions import Neo4jError
+
         try:
             with graphrag._neo4j_driver().session() as session:
                 records = list(
                     session.run(
                         cypher,
                         entity=entity,
-                        scope=graphrag.config.get("scope", "literature"),
+                        scope=target_config["scope"],
+                        source=graph_source,
                     )
                 )
-        except Exception as exc:
-            logger.warning("subgraph query failed: %s", exc)
+        except (Neo4jError, ConnectionError, OSError, TimeoutError) as exc:
+            logger.warning("subgraph query failed: %s", type(exc).__name__)
             return {"entity": entity, "nodes": [], "links": []}
 
         node_map: dict[str, dict] = {}
@@ -415,7 +495,50 @@ async def subgraph(entity: str) -> JSONResponse:
 
 class SynthesisRequest(BaseModel):
     query: str
-    evidence: list[Any]
+    evidence: list[Any] = Field(default_factory=list)
+    evidenceId: str | None = None
+
+
+class SynthesisStreamRequest(BaseModel):
+    query: str
+    evidenceId: str
+
+
+def _require_cached_evidence(query: str, evidence_id: str) -> dict[str, Any]:
+    record = _cache_get(evidence_id)
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "evidence_expired",
+                "message": "Retrieved evidence is no longer available. Run the query again.",
+                "retryable": True,
+            },
+        )
+    if record["query"] != query:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "evidence_mismatch",
+                "message": "The evidence does not belong to this query.",
+                "retryable": False,
+            },
+        )
+    evidence = record["evidence"]
+    if not evidence.get("found", False):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "empty_evidence",
+                "message": "Synthesis requires retrieved evidence.",
+                "retryable": False,
+            },
+        )
+    return evidence
+
+
+def _sse_event(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
 @app.post("/api/synthesis")
@@ -424,23 +547,20 @@ async def synthesis(req: SynthesisRequest) -> JSONResponse:
     agent = await _get_agent()
     loop = asyncio.get_event_loop()
 
-    # Prefer cached evidence from a recent /api/match call for this query
-    cached = _cache_get(req.query)
-    if cached and cached.get("found"):
-        ev = cached
+    if req.evidenceId:
+        ev = _require_cached_evidence(req.query, req.evidenceId)
     else:
-        # Fall back: run GraphRAG retrieval on demand
+        # Compatibility path for non-UI clients: default to literature retrieval.
         ev = await loop.run_in_executor(None, agent.graphrag.cached_execute, req.query)
         if not isinstance(ev, dict):
             ev = {"found": False}
-        _cache_put(req.query, ev)
 
     from .agent import LLMUnavailableError
 
     try:
         result = await loop.run_in_executor(None, agent.synthesize, req.query, ev)
     except LLMUnavailableError as exc:
-        logger.warning("Synthesis unavailable for query=%r: %s", req.query, exc.detail)
+        logger.warning("Synthesis unavailable: error=%s", exc.detail)
         raise HTTPException(
             status_code=503,
             detail={
@@ -457,4 +577,77 @@ async def synthesis(req: SynthesisRequest) -> JSONResponse:
             "fallbackUsed": result.fallback_used,
             "tokensUsed": None,
         }
+    )
+
+
+@app.post("/api/synthesis/stream")
+async def synthesis_stream(req: SynthesisStreamRequest) -> StreamingResponse:
+    """Stream grounded synthesis tokens for one exact cached evidence result."""
+    agent = await _get_agent()
+    evidence = _require_cached_evidence(req.query, req.evidenceId)
+    loop = asyncio.get_event_loop()
+
+    from .agent import LLMUnavailableError
+
+    try:
+        prepared = await loop.run_in_executor(
+            None,
+            agent.prepare_synthesis_stream,
+            req.query,
+            evidence,
+        )
+    except LLMUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "synthesis_unavailable",
+                "message": exc.detail,
+                "retryable": True,
+            },
+        ) from exc
+
+    def generate():
+        yield _sse_event(
+            {
+                "type": "meta",
+                "model": prepared.model,
+                "fallbackUsed": prepared.fallback_used,
+            }
+        )
+        try:
+            for event in prepared.events:
+                if event.type == "meta":
+                    yield _sse_event(
+                        {
+                            "type": "meta",
+                            "model": event.model,
+                            "fallbackUsed": event.fallback_used,
+                        }
+                    )
+                else:
+                    yield _sse_event({"type": "token", "text": event.text})
+        except LLMUnavailableError as exc:
+            logger.warning(
+                "Synthesis stream terminated: evidence_id=%s error=%s",
+                req.evidenceId,
+                type(exc).__name__,
+            )
+            yield _sse_event(
+                {
+                    "type": "error",
+                    "code": "synthesis_unavailable",
+                    "message": exc.detail,
+                    "retryable": True,
+                }
+            )
+            return
+        yield _sse_event({"type": "done"})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )

@@ -20,6 +20,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import type { ProvenanceSource, TrialResult } from "../lib/adapters";
 import { getPdfSourceUrl } from "../lib/api";
 import { useQueryPoll } from "../lib/useQueryPoll";
+import type { ActiveDocumentContext } from "../lib/api";
 import KnowledgeGraph from "./KnowledgeGraph";
 
 // Configure PDF.js worker (served from node_modules via Vite's new URL() bundling)
@@ -267,10 +268,12 @@ function ResultCard({
 export default function QueryPane({
   clinicianMode,
   externalFill,
+  activeDocument,
   onQueryComplete,
 }: {
   clinicianMode: boolean;
   externalFill?: string;
+  activeDocument: ActiveDocumentContext | null;
   onQueryComplete?: (query: string, hitCount: number) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -305,6 +308,7 @@ export default function QueryPane({
     graph: liveGraph,
     meta: liveMeta,
     errorMsg: liveErrorMsg,
+    emptyOutcome,
     synthesis,
     synthesisLoading,
     synthesisError,
@@ -322,7 +326,7 @@ export default function QueryPane({
     setExpanded(null);
     setDisplayCount(3);
     setHighlighted(null);
-    apiRunQuery(q, { topK: 10 });
+    apiRunQuery(q, { topK: 10, activeDocument });
   }
 
   function toggleFilter(category: keyof typeof activeFilters, value: string) {
@@ -466,11 +470,12 @@ export default function QueryPane({
         <NonIdealState
           icon="search-template"
           title="No results"
-          description={
-            clinicianMode
-              ? "No matching records found. Try different terms or remove any active filters."
-              : "No matches above the confidence threshold (0.70). Try broader terms or clear the active filters."
-          }
+          description={(
+            <div>
+              <div>{emptyOutcome?.message ?? "No relevant evidence was found."}</div>
+              <div style={{ marginTop: 4 }}>{emptyOutcome?.action ?? "Refine the query and try again."}</div>
+            </div>
+          )}
         />
       );
     }
@@ -492,6 +497,11 @@ export default function QueryPane({
             </Tag>
           )}
         </div>
+        {results.length === 0 && (
+          <Callout intent={Intent.PRIMARY} icon="diagram-tree">
+            Structured graph evidence was found. The clinical summary is grounded in those facts.
+          </Callout>
+        )}
         {visibleResults.map((result, index) => (
           <div
             key={result.id}
@@ -509,6 +519,23 @@ export default function QueryPane({
                 if (next) setHighlighted(null);
               }}
             />
+            <Tag
+              minimal
+              intent={activeDocument ? Intent.PRIMARY : Intent.NONE}
+              icon={activeDocument ? "document" : "book"}
+              title={activeDocument
+                ? `Queries are limited to ${activeDocument.filename}`
+                : "No active upload; queries use the literature index"}
+              style={{
+                flexShrink: 0,
+                maxWidth: 220,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {activeDocument ? `Searching: ${activeDocument.filename}` : "Searching: literature"}
+            </Tag>
           </div>
         ))}
         {hasMore && (
@@ -672,13 +699,18 @@ export default function QueryPane({
               {clinicianMode ? "CLINICAL SUMMARY" : "AI SYNTHESIS"}
             </span>
             {synthesisLoading && <Tag minimal intent={Intent.PRIMARY} style={{ fontSize: 9 }}>generating…</Tag>}
-            {!synthesisLoading && synthesis && <Tag minimal intent={Intent.SUCCESS} style={{ fontSize: 9 }}>done</Tag>}
-            {!synthesisLoading && synthesis && synthesisFallbackUsed && (
+            {!synthesisLoading && synthesis && !synthesisError && (
+              <Tag minimal intent={Intent.SUCCESS} style={{ fontSize: 9 }}>done</Tag>
+            )}
+            {!synthesisLoading && synthesisError && (
+              <Tag minimal intent={Intent.WARNING} style={{ fontSize: 9 }}>interrupted</Tag>
+            )}
+            {synthesis && synthesisFallbackUsed && (
               <Tag minimal intent={Intent.WARNING} style={{ fontSize: 9 }}>
                 Fallback · {synthesisModel ?? "unidentified model"}
               </Tag>
             )}
-            {!synthesisLoading && synthesis && (
+            {synthesis && (
               <Button
                 minimal small
                 icon={synthesisExpanded ? "chevron-up" : "chevron-down"}
@@ -688,12 +720,7 @@ export default function QueryPane({
               />
             )}
           </div>
-          {synthesisLoading ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-              <div className={Classes.SKELETON} style={{ height: 11, width: "100%", borderRadius: 2 }} />
-              <div className={Classes.SKELETON} style={{ height: 11, width: "85%", borderRadius: 2 }} />
-            </div>
-          ) : synthesis ? (
+          {synthesis ? (
             <div
               style={{
                 overflow: "hidden",
@@ -704,6 +731,7 @@ export default function QueryPane({
             >
               <p style={{ margin: 0, fontSize: 12, lineHeight: 1.65, color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}>
                 {synthesis}
+                {synthesisLoading && <span aria-hidden="true"> ▌</span>}
               </p>
               {!synthesisExpanded && (
                 <div
@@ -714,6 +742,11 @@ export default function QueryPane({
                   }}
                 />
               )}
+            </div>
+          ) : synthesisLoading ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <div className={Classes.SKELETON} style={{ height: 11, width: "100%", borderRadius: 2 }} />
+              <div className={Classes.SKELETON} style={{ height: 11, width: "85%", borderRadius: 2 }} />
             </div>
           ) : synthesisError ? (
             <Callout intent={Intent.WARNING} icon="warning-sign" title="Synthesis unavailable">
@@ -730,6 +763,14 @@ export default function QueryPane({
               </div>
             </Callout>
           ) : null}
+          {synthesis && synthesisError && (
+            <Callout intent={Intent.WARNING} icon="warning-sign" style={{ marginTop: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                <span>{synthesisError.message}</span>
+                <Button small minimal intent={Intent.WARNING} text="Retry" onClick={retrySynthesis} />
+              </div>
+            </Callout>
+          )}
         </div>
       )}
 

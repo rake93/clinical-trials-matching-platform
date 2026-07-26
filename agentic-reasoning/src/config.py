@@ -29,6 +29,14 @@ class ModelParams(BaseModel):
     presence_penalty: float = 0.0
 
 
+class RetrievalTarget(BaseModel):
+    """A named Qdrant collection and its matching Neo4j provenance scope."""
+
+    name: str = Field(min_length=1)
+    collection: str = Field(min_length=1)
+    scope: str = Field(min_length=1)
+
+
 class GraphRAGConfig(BaseModel):
     qdrant_url: str = "http://localhost:6333"
     collection: str = "medical_papers"
@@ -38,6 +46,7 @@ class GraphRAGConfig(BaseModel):
     neo4j_username: str = "neo4j"
     neo4j_password: str = "password"
     scope: str = "literature"
+    retrieval_targets: list[RetrievalTarget] = Field(default_factory=list)
     min_relevance_score: float = Field(default=0.35, ge=-1.0, le=1.0)
     limit: int = 3
     neo4j_limit: int = 10
@@ -45,6 +54,20 @@ class GraphRAGConfig(BaseModel):
     retrieval_k: Optional[int] = None
     cache_ttl: int = 300
     cache_maxsize: int = 128
+
+    @field_validator("retrieval_targets")
+    @classmethod
+    def retrieval_targets_are_unique(
+        cls,
+        value: list[RetrievalTarget],
+    ) -> list[RetrievalTarget]:
+        names = [target.name for target in value]
+        if len(names) != len(set(names)):
+            raise ValueError("retrieval target names must be unique")
+        pairs = [(target.collection, target.scope) for target in value]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError("retrieval collection/scope pairs must be unique")
+        return value
 
 
 class AgentConfig(BaseModel):

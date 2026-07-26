@@ -20,6 +20,7 @@ passes the *full* original string as the model identifier — which is exactly h
 references GGUF models loaded from HuggingFace.
 Override the target server via LM_STUDIO_BASE_URL if needed.
 """
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -55,6 +56,49 @@ class LLMHealth:
     endpoint: LLMEndpoint
     available: bool
     detail: str | None = None
+
+
+def _usable_model_names(
+    endpoint: LLMEndpoint, payload: object
+) -> tuple[str, ...] | None:
+    """Extract usable model identifiers, or return ``None`` for bad schemas."""
+    if not isinstance(payload, dict):
+        return None
+
+    if endpoint.provider == "ollama":
+        entries = payload.get("models")
+        identifier_fields = ("name", "model")
+    else:
+        entries = payload.get("data")
+        identifier_fields = ("id",)
+
+    if not isinstance(entries, list):
+        return None
+
+    names: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for field in identifier_fields:
+            value = entry.get(field)
+            if isinstance(value, str) and value.strip():
+                names.append(value.strip())
+                break
+
+    if entries and not names:
+        return None
+    return tuple(names)
+
+
+def _unavailable_health(endpoint: LLMEndpoint, detail: str) -> LLMHealth:
+    """Build and log an unavailable health result without response payload data."""
+    logger.info(
+        "LLM provider unavailable: provider=%s health_url=%s detail=%s",
+        endpoint.provider,
+        endpoint.health_url,
+        detail,
+    )
+    return LLMHealth(endpoint=endpoint, available=False, detail=detail)
 
 
 def resolve_llm_endpoint(model: str) -> LLMEndpoint:
@@ -110,7 +154,7 @@ def resolve_llm_endpoint(model: str) -> LLMEndpoint:
 
 
 def check_llm_health(model: str, timeout_seconds: float = 2.0) -> LLMHealth:
-    """Probe the configured local provider without invoking a model."""
+    """Probe the provider's model listing without invoking a model."""
     endpoint = resolve_llm_endpoint(model)
     try:
         with httpx.Client(timeout=timeout_seconds) as client:
@@ -118,13 +162,40 @@ def check_llm_health(model: str, timeout_seconds: float = 2.0) -> LLMHealth:
         response.raise_for_status()
     except httpx.HTTPError as exc:
         detail = f"{type(exc).__name__}: {exc}"
-        logger.info(
-            "LLM provider unavailable: provider=%s health_url=%s detail=%s",
-            endpoint.provider,
-            endpoint.health_url,
-            detail,
+        return _unavailable_health(endpoint, detail)
+
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _unavailable_health(
+            endpoint,
+            "Malformed model-list response: expected JSON; verify the provider API.",
         )
-        return LLMHealth(endpoint=endpoint, available=False, detail=detail)
+
+    model_names = _usable_model_names(endpoint, payload)
+    if model_names is None:
+        expected = (
+            "{models: [{name or model: ...}]}"
+            if endpoint.provider == "ollama"
+            else "{data: [{id: ...}]}"
+        )
+        return _unavailable_health(
+            endpoint,
+            f"Malformed model-list response: expected {expected}; "
+            "verify the provider API.",
+        )
+
+    if not model_names:
+        action = (
+            "pull or configure a model in Ollama"
+            if endpoint.provider == "ollama"
+            else f"load a model in {endpoint.provider}"
+        )
+        return _unavailable_health(
+            endpoint,
+            f"No usable models are available; {action} and retry.",
+        )
+
     return LLMHealth(endpoint=endpoint, available=True)
 
 

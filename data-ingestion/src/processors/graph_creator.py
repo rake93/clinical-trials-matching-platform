@@ -24,6 +24,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any, TypeAlias
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from neo4j import GraphDatabase
@@ -319,18 +320,62 @@ class GraphCreator:
 
     @staticmethod
     def _health_url(chat_url: str) -> str:
-        """Return the local server health endpoint associated with a chat URL."""
-        marker = "/v1/chat/completions"
-        if marker in chat_url:
-            return f"{chat_url.split(marker, 1)[0]}/health"
-        marker = "/chat/completions"
-        if marker in chat_url:
-            return f"{chat_url.split(marker, 1)[0]}/health"
-        return f"{chat_url.rstrip('/')}/health"
+        """Return the OpenAI-compatible model-list URL for a chat URL."""
+        parsed = urlsplit(chat_url)
+        path = parsed.path.rstrip("/")
+        chat_route = "/chat/completions"
+        if path.endswith(chat_route):
+            path = path[: -len(chat_route)]
+        models_path = f"{path}/models" if path else "/models"
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, models_path, "", "")
+        )
+
+    @staticmethod
+    def _listed_model_ids(payload: object) -> tuple[str, ...] | None:
+        """Extract OpenAI model IDs, or return ``None`` for malformed listings."""
+        if not isinstance(payload, dict):
+            return None
+        entries = payload.get("data")
+        if not isinstance(entries, list):
+            return None
+
+        model_ids = tuple(
+            model_id.strip()
+            for entry in entries
+            if isinstance(entry, dict)
+            and isinstance((model_id := entry.get("id")), str)
+            and model_id.strip()
+        )
+        if entries and not model_ids:
+            return None
+        return model_ids
+
+    @staticmethod
+    def _model_aliases(model: str) -> set[str]:
+        """Return conservative aliases suitable for model-list comparison."""
+        normalized = model.strip().casefold().rstrip("/")
+        if not normalized:
+            return set()
+        aliases = {normalized, normalized.rsplit("/", 1)[-1]}
+        return {
+            alias.removesuffix(":latest")
+            for alias in aliases
+            if alias.removesuffix(":latest")
+        }
+
+    @classmethod
+    def _model_is_listed(cls, configured_model: str, model_ids: tuple[str, ...]) -> bool:
+        """Check exact and conservative alias matches for a configured model."""
+        configured_aliases = cls._model_aliases(configured_model)
+        return any(
+            configured_aliases.intersection(cls._model_aliases(model_id))
+            for model_id in model_ids
+        )
 
     def _is_endpoint_healthy(self, endpoint: Endpoint) -> bool:
         """Check a local inference endpoint without submitting clinical text."""
-        name, chat_url, _ = endpoint
+        name, chat_url, configured_model = endpoint
         health_url = self._health_url(chat_url)
         try:
             response = requests.get(health_url, timeout=self.health_timeout)
@@ -349,14 +394,46 @@ class GraphCreator:
             )
             return False
 
-        if response.ok:
-            return True
-        logger.info(
-            "event=kg_endpoint_unhealthy endpoint=%s status=%s",
-            name,
-            response.status_code,
-        )
-        return False
+        if not response.ok:
+            logger.info(
+                "event=kg_endpoint_unhealthy endpoint=%s reason=http_status status=%s",
+                name,
+                response.status_code,
+            )
+            return False
+
+        try:
+            payload = response.json()
+        except (requests.exceptions.JSONDecodeError, json.JSONDecodeError):
+            logger.info(
+                "event=kg_endpoint_unhealthy endpoint=%s reason=invalid_json",
+                name,
+            )
+            return False
+
+        model_ids = self._listed_model_ids(payload)
+        if model_ids is None:
+            logger.info(
+                "event=kg_endpoint_unhealthy endpoint=%s "
+                "reason=malformed_model_list",
+                name,
+            )
+            return False
+        if not model_ids:
+            logger.info(
+                "event=kg_endpoint_unhealthy endpoint=%s reason=no_models_loaded",
+                name,
+            )
+            return False
+
+        if not self._model_is_listed(configured_model, model_ids):
+            logger.info(
+                "event=kg_endpoint_model_alias_unverified endpoint=%s "
+                "reason=configured_model_not_listed loaded_model_count=%d",
+                name,
+                len(model_ids),
+            )
+        return True
 
     def _select_healthy_endpoint(self) -> Endpoint | None:
         """Prefer SGLang and use the configured local fallback only when needed."""

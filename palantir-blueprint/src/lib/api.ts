@@ -13,6 +13,18 @@ const INGEST_BASE = (import.meta.env.VITE_INGEST_API_BASE_URL as string | undefi
 
 // ─── Backend types — reasoning API (/api/match) ────────────────
 
+export type RetrievalTarget = "literature" | "patient_context";
+
+export interface ActiveDocumentContext {
+  filename: string;
+  slug: string;
+}
+
+export interface RetrievalContext {
+  target: RetrievalTarget;
+  activeDocument: ActiveDocumentContext | null;
+}
+
 /** One evidence triplet attached to a match chunk. */
 export interface BackendMatchEvidence {
   head: string;
@@ -29,10 +41,26 @@ export interface BackendMatch {
   chunkIndex: number;
   score: number;
   rankScore?: number | null;
+  collection?: string | null;
+  scope?: string | null;
   source: string;
   content: string;
   context: string;
   evidence: BackendMatchEvidence[];
+}
+
+export interface BackendEmptyOutcome {
+  code: "source_mismatch" | "source_not_indexed" | "no_relevant_evidence";
+  message: string;
+  action: string;
+}
+
+export interface BackendRetrievalContext {
+  name: RetrievalTarget;
+  collection: string;
+  scope: string;
+  source: string | null;
+  source_slug: string | null;
 }
 
 /** Full response from POST /api/match (synchronous, no polling). */
@@ -42,6 +70,9 @@ export interface BackendMatchResponse {
   matches: BackendMatch[];
   graphFacts: string[];
   graphAnchor?: string | null;
+  retrievalContext: BackendRetrievalContext | null;
+  empty: BackendEmptyOutcome | null;
+  evidenceId: string | null;
   latency_ms: number;
 }
 
@@ -93,12 +124,11 @@ export interface BackendArtifactPreviewResponse {
   preview: string;
 }
 
-export interface BackendSynthesisResponse {
-  synthesis: string;
-  model: string | null;
-  fallbackUsed: boolean;
-  tokensUsed: number | null;
-}
+export type BackendSynthesisStreamEvent =
+  | { type: "meta"; model: string | null; fallbackUsed: boolean }
+  | { type: "token"; text: string }
+  | { type: "done" }
+  | { type: "error"; code: string | null; message: string; retryable: boolean };
 
 export interface ApiErrorDetail {
   code: string | null;
@@ -153,29 +183,57 @@ async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
  * POST /api/match — synchronous GraphRAG retrieval. Returns matches directly.
  * Uses multipart/form-data as required by the FastAPI Form(...) parameter.
  */
-export function matchQuery(query: string, topK = 10): Promise<BackendMatchResponse> {
+export function matchQuery(
+  query: string,
+  context: RetrievalContext,
+  topK = 10,
+  signal?: AbortSignal,
+): Promise<BackendMatchResponse> {
   const form = new FormData();
   form.append("query", query);
+  form.append("target", context.target);
+  if (context.activeDocument) {
+    form.append("source", context.activeDocument.filename);
+    form.append("source_slug", context.activeDocument.slug);
+  }
   form.append("top_k", String(topK));
-  return fetchJson<BackendMatchResponse>(`${API_BASE}/api/match`, { method: "POST", body: form });
-}
-
-/**
- * POST /api/synthesis — Phase 2 LLM synthesis grounded in cached GraphRAG evidence.
- * Pass the raw matches from /api/match; the server reuses its cached retrieval result.
- */
-export function fetchSynthesis(query: string, evidence: unknown[]): Promise<BackendSynthesisResponse> {
-  return fetchJson<BackendSynthesisResponse>(`${API_BASE}/api/synthesis`, {
+  return fetchJson<BackendMatchResponse>(`${API_BASE}/api/match`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ query, evidence }),
+    body: form,
+    signal,
   });
 }
 
+export async function fetchSynthesisStream(
+  query: string,
+  evidenceId: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const response = await fetch(`${API_BASE}/api/synthesis/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, evidenceId }),
+    signal,
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(response.status, parseErrorDetail(payload, response.status));
+  }
+  return response;
+}
 
-export function fetchSubgraph(entity: string): Promise<BackendSubgraphResponse> {
+export function fetchSubgraph(
+  entity: string,
+  context: RetrievalContext,
+  signal?: AbortSignal,
+): Promise<BackendSubgraphResponse> {
+  const params = new URLSearchParams({ target: context.target });
+  if (context.activeDocument) {
+    params.set("source_slug", context.activeDocument.slug);
+  }
   return fetchJson<BackendSubgraphResponse>(
-    `${API_BASE}/api/debug/subgraph/${encodeURIComponent(entity)}`
+    `${API_BASE}/api/debug/subgraph/${encodeURIComponent(entity)}?${params.toString()}`,
+    { signal },
   );
 }
 

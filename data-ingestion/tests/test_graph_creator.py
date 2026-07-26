@@ -101,13 +101,21 @@ def _response(content: str) -> SimpleNamespace:
     )
 
 
+def _model_list_response(model_ids: list[str]) -> SimpleNamespace:
+    return SimpleNamespace(
+        ok=True,
+        status_code=200,
+        json=lambda: {"data": [{"id": model_id} for model_id in model_ids]},
+    )
+
+
 def test_fallback_is_selected_before_posting_text(creator: GraphCreator) -> None:
     with (
         patch(
             "src.processors.graph_creator.requests.get",
             side_effect=[
                 requests.exceptions.ConnectionError(),
-                SimpleNamespace(ok=True, status_code=200),
+                _model_list_response(["fallback-model"]),
             ],
         ) as get,
         patch(
@@ -117,10 +125,83 @@ def test_fallback_is_selected_before_posting_text(creator: GraphCreator) -> None
     ):
         assert creator.extract_triplets("A" * 60) == []
 
-    assert get.call_args_list[0].args[0] == "http://primary:30000/health"
-    assert get.call_args_list[1].args[0] == "http://fallback:1234/health"
+    assert get.call_args_list[0].args[0] == "http://primary:30000/v1/models"
+    assert get.call_args_list[1].args[0] == "http://fallback:1234/v1/models"
     assert post.call_args.args[0] == "http://fallback:1234/v1/chat/completions"
     assert post.call_args.kwargs["json"]["model"] == "fallback-model"
+
+
+@pytest.mark.parametrize(
+    ("chat_url", "expected"),
+    [
+        (
+            "http://localhost:1234/v1/chat/completions",
+            "http://localhost:1234/v1/models",
+        ),
+        (
+            "http://localhost:1234/chat/completions",
+            "http://localhost:1234/models",
+        ),
+        (
+            "http://localhost:1234/openai/chat/completions?token=ignored",
+            "http://localhost:1234/openai/models",
+        ),
+        ("http://localhost:1234/v1", "http://localhost:1234/v1/models"),
+    ],
+)
+def test_health_url_derives_model_list_route(chat_url: str, expected: str) -> None:
+    assert GraphCreator._health_url(chat_url) == expected
+
+
+def test_endpoint_health_requires_a_loaded_model(creator: GraphCreator) -> None:
+    with patch(
+        "src.processors.graph_creator.requests.get",
+        return_value=_model_list_response(["publisher/primary-model"]),
+    ):
+        assert creator._is_endpoint_healthy(creator._primary_endpoint) is True
+
+    with patch(
+        "src.processors.graph_creator.requests.get",
+        return_value=_model_list_response([]),
+    ):
+        assert creator._is_endpoint_healthy(creator._primary_endpoint) is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"data": "not-a-list"},
+        {"data": [{}]},
+        {"data": [{"id": "  "}]},
+    ],
+)
+def test_endpoint_health_rejects_malformed_model_lists(
+    creator: GraphCreator, payload: object
+) -> None:
+    response = SimpleNamespace(ok=True, status_code=200, json=lambda: payload)
+    with patch(
+        "src.processors.graph_creator.requests.get", return_value=response
+    ):
+        assert creator._is_endpoint_healthy(creator._primary_endpoint) is False
+
+
+def test_endpoint_health_accepts_unverified_server_alias(
+    creator: GraphCreator,
+) -> None:
+    with patch(
+        "src.processors.graph_creator.requests.get",
+        return_value=_model_list_response(["server-managed-alias"]),
+    ):
+        assert creator._is_endpoint_healthy(creator._primary_endpoint) is True
+
+
+def test_endpoint_health_rejects_transport_failure(creator: GraphCreator) -> None:
+    with patch(
+        "src.processors.graph_creator.requests.get",
+        side_effect=requests.exceptions.ConnectionError("offline"),
+    ):
+        assert creator._is_endpoint_healthy(creator._primary_endpoint) is False
 
 
 def test_unavailable_extractor_does_not_mark_progress(

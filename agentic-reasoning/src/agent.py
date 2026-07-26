@@ -12,10 +12,11 @@ Phase 2 — Evidence-grounded synthesis:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 import httpx
 from openai import APIConnectionError, APITimeoutError
@@ -28,6 +29,9 @@ from .tools.graphrag import GraphRAGTool
 logger = logging.getLogger(__name__)
 
 _NO_EVIDENCE_RESPONSE = "No evidence found for this query."
+_THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
+_THINK_START = "<think>"
+_THINK_END = "</think>"
 
 
 class LLMUnavailableError(RuntimeError):
@@ -45,6 +49,25 @@ class SynthesisResult:
     text: str
     model: str | None
     fallback_used: bool
+
+
+@dataclass(frozen=True)
+class SynthesisStreamEvent:
+    """One token or serving-model change emitted during streamed synthesis."""
+
+    type: Literal["token", "meta"]
+    text: str = ""
+    model: str | None = None
+    fallback_used: bool = False
+
+
+@dataclass(frozen=True)
+class PreparedSynthesisStream:
+    """A preflighted synthesis stream ready for HTTP transport."""
+
+    model: str
+    fallback_used: bool
+    events: Iterator[SynthesisStreamEvent]
 
 
 @dataclass
@@ -81,6 +104,67 @@ def _format_evidence(evidence: dict[str, Any]) -> str:
         parts.extend(f"  • {fact}" for fact in graph_facts)
 
     return "\n\n".join(parts) if parts else "No evidence retrieved."
+
+
+def _strip_reasoning_block(text: str) -> str:
+    """Remove a leading local-model reasoning block from a completed response."""
+    return _THINK_BLOCK_RE.sub("", text, count=1)
+
+
+def _visible_stream_tokens(chunks: Iterator[Any]) -> Iterator[str]:
+    """Yield answer tokens while suppressing a leading `<think>` block."""
+    state: Literal["prefix", "thinking", "answer"] = "prefix"
+    buffer = ""
+    trim_answer_prefix = False
+
+    for chunk in chunks:
+        content = chunk.content or ""
+        if not content:
+            continue
+        token = str(content)
+
+        if state == "answer":
+            if trim_answer_prefix:
+                token = token.lstrip("\r\n")
+                if not token:
+                    continue
+                trim_answer_prefix = False
+            yield token
+            continue
+
+        buffer += token
+        if state == "prefix":
+            candidate = buffer.lstrip()
+            if _THINK_START.startswith(candidate) and len(candidate) < len(_THINK_START):
+                continue
+            if candidate.startswith(_THINK_START):
+                state = "thinking"
+                buffer = candidate[len(_THINK_START):]
+            else:
+                state = "answer"
+                yield buffer
+                buffer = ""
+                continue
+
+        end_index = buffer.find(_THINK_END)
+        if end_index >= 0:
+            state = "answer"
+            answer_prefix = buffer[end_index + len(_THINK_END):].lstrip("\r\n")
+            buffer = ""
+            if answer_prefix:
+                trim_answer_prefix = False
+                yield answer_prefix
+            else:
+                trim_answer_prefix = True
+        else:
+            buffer = buffer[-(len(_THINK_END) - 1):]
+
+    if state == "prefix" and buffer:
+        yield buffer
+    elif state == "thinking":
+        raise LLMUnavailableError(
+            "The synthesis model returned an unterminated reasoning block."
+        )
 
 
 class Agent:
@@ -191,16 +275,110 @@ class Agent:
                     f"Synthesis invocation failed for fallback {fallback_model}: "
                     f"{type(fallback_exc).__name__}: {fallback_exc}"
                 ) from fallback_exc
+            fallback_text = _strip_reasoning_block(str(response.content or "")).strip()
             return SynthesisResult(
-                text=response.content or _NO_EVIDENCE_RESPONSE,
+                text=fallback_text or _NO_EVIDENCE_RESPONSE,
                 model=fallback_model,
                 fallback_used=True,
             )
 
+        response_text = _strip_reasoning_block(str(response.content or "")).strip()
         return SynthesisResult(
-            text=response.content or _NO_EVIDENCE_RESPONSE,
+            text=response_text or _NO_EVIDENCE_RESPONSE,
             model=model,
             fallback_used=fallback_used,
+        )
+
+    def _stream_synthesis_events(
+        self,
+        messages: list[Any],
+        llm: Any,
+        model: str,
+        fallback_used: bool,
+    ) -> Iterator[SynthesisStreamEvent]:
+        emitted_token = False
+        try:
+            for token in _visible_stream_tokens(llm.stream(messages)):
+                emitted_token = True
+                yield SynthesisStreamEvent(type="token", text=token)
+            return
+        except (
+            APIConnectionError,
+            APITimeoutError,
+            httpx.HTTPError,
+            ConnectionError,
+            TimeoutError,
+        ) as exc:
+            fallback_model = self.config.fallback_model
+            if (
+                emitted_token
+                or fallback_used
+                or not fallback_model
+                or self.fallback_llm is None
+            ):
+                raise LLMUnavailableError(
+                    f"Synthesis stream failed for {model}: {type(exc).__name__}: {exc}"
+                ) from exc
+
+            fallback_health = check_llm_health(
+                fallback_model,
+                self.config.health_check_timeout_seconds,
+            )
+            if not fallback_health.available:
+                raise LLMUnavailableError(
+                    "Synthesis stream is unavailable after primary transport failure: "
+                    f"primary ({model}) error={type(exc).__name__}: {exc}; "
+                    f"fallback ({fallback_model}) health check failed: {fallback_health.detail}"
+                ) from exc
+
+            logger.warning(
+                "Primary synthesis stream failed before output; switching fallback: "
+                "primary=%s fallback=%s error=%s",
+                model,
+                fallback_model,
+                type(exc).__name__,
+            )
+            yield SynthesisStreamEvent(
+                type="meta",
+                model=fallback_model,
+                fallback_used=True,
+            )
+
+            try:
+                for token in _visible_stream_tokens(self.fallback_llm.stream(messages)):
+                    yield SynthesisStreamEvent(type="token", text=token)
+            except (
+                APIConnectionError,
+                APITimeoutError,
+                httpx.HTTPError,
+                ConnectionError,
+                TimeoutError,
+            ) as fallback_exc:
+                raise LLMUnavailableError(
+                    f"Synthesis stream failed for fallback {fallback_model}: "
+                    f"{type(fallback_exc).__name__}: {fallback_exc}"
+                ) from fallback_exc
+
+    def prepare_synthesis_stream(
+        self,
+        query: str,
+        evidence: dict[str, Any],
+    ) -> PreparedSynthesisStream:
+        """Preflight a grounded stream without repeating evidence retrieval."""
+        if not evidence.get("found", False):
+            raise ValueError("Cannot stream synthesis without retrieved evidence.")
+
+        messages = self._build_messages(query, evidence)
+        llm, model, fallback_used = self._select_synthesis_llm()
+        return PreparedSynthesisStream(
+            model=model,
+            fallback_used=fallback_used,
+            events=self._stream_synthesis_events(
+                messages,
+                llm,
+                model,
+                fallback_used,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -263,15 +441,11 @@ class Agent:
             yield _NO_EVIDENCE_RESPONSE
             return
 
-        # Phase 2: stream synthesis tokens. The selected provider is checked
-        # before streaming so an unavailable primary can use the fallback.
         logger.info("Phase 2 — streaming synthesis")
-        messages = self._build_messages(query, evidence)
-        llm, _, _ = self._select_synthesis_llm()
-        for chunk in llm.stream(messages):
-            token = chunk.content or ""
-            if token:
-                yield token
+        prepared = self.prepare_synthesis_stream(query, evidence)
+        for event in prepared.events:
+            if event.type == "token":
+                yield event.text
 
     def run_json(self, query: str) -> dict[str, Any]:
         """Run and return a JSON-serialisable dict (for server/CLI use)."""

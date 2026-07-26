@@ -19,6 +19,7 @@ import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import { fetchChunks, fetchMarkdownArtifact, fetchCleanArtifact, getOcrVizUrl } from "../lib/api";
+import type { ActiveDocumentContext } from "../lib/api";
 import { adaptChunk } from "../lib/adapters";
 import type { UIChunk } from "../lib/adapters";
 
@@ -326,7 +327,13 @@ function ChunkSummary({ chunks, clinicianMode }: { chunks: Chunk[]; clinicianMod
   );
 }
 
-export default function IngestionPane({ clinicianMode }: { clinicianMode: boolean }) {
+export default function IngestionPane({
+  clinicianMode,
+  onDocumentReady,
+}: {
+  clinicianMode: boolean;
+  onDocumentReady: (document: ActiveDocumentContext) => void;
+}) {
   const [running, setRunning]             = useState(false);
   const [steps, setSteps]                 = useState<PipelineStep[]>(INITIAL_STEPS);
   const [logLines, setLogLines]           = useState<string[]>([]);
@@ -511,6 +518,10 @@ export default function IngestionPane({ clinicianMode }: { clinicianMode: boolea
             if (eventSlug) {
               setJobId(eventSlug);
               fetchPostRunData(eventSlug, ocrPages);
+              onDocumentReady({
+                filename: selectedFile.name,
+                slug: eventSlug,
+              });
             }
             return;
           }

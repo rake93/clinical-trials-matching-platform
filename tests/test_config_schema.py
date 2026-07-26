@@ -165,4 +165,16 @@ class TestAgenticReasoningConfig:
         assert agent["fallback_model"].startswith("lmstudio/")
         assert agent["health_check_timeout_seconds"] > 0
         assert graphrag["scope"] == "literature"
+        assert graphrag["retrieval_targets"] == [
+            {
+                "name": "patient_context",
+                "collection": "patient_context",
+                "scope": "patient_context",
+            },
+            {
+                "name": "literature",
+                "collection": "medical_papers",
+                "scope": "literature",
+            },
+        ]
         assert -1.0 <= graphrag["min_relevance_score"] <= 1.0

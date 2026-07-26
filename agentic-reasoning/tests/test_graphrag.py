@@ -7,8 +7,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 
-from src.tools.graphrag import GraphRAGTool, _extract_keywords
+from src.tools.graphrag import (
+    GraphRAGTool,
+    GraphRAGUnavailableError,
+    _extract_keywords,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +35,22 @@ BASE_CONFIG = {
     "reranker_model": None,
     "cache_ttl": 60,
     "cache_maxsize": 32,
+}
+
+MULTI_TARGET_CONFIG = {
+    **BASE_CONFIG,
+    "retrieval_targets": [
+        {
+            "name": "patient_context",
+            "collection": "patient_context",
+            "scope": "patient_context",
+        },
+        {
+            "name": "literature",
+            "collection": "medical_papers",
+            "scope": "literature",
+        },
+    ],
 }
 
 
@@ -118,6 +139,7 @@ class TestGraphRAGToolExecute:
 
         assert result["found"] is False
         assert result["vector_results"] == []
+        assert result["empty"]["code"] == "no_relevant_evidence"
 
     def test_graph_facts_included(self):
         tool = self._make_tool()
@@ -138,9 +160,10 @@ class TestGraphRAGToolExecute:
         result = tool.execute("")
         assert "Error" in str(result)
 
-    def test_vector_search_failure_returns_error(self):
+    def test_vector_search_failure_is_explicit(self):
         tool = self._make_tool()
         mock_client = MagicMock()
+        mock_client.collection_exists.return_value = True
         mock_client.query_points.side_effect = ConnectionError("Qdrant unavailable")
 
         mock_embedder = MagicMock()
@@ -149,8 +172,106 @@ class TestGraphRAGToolExecute:
         tool._qdrant = mock_client
         tool._embedder = mock_embedder
 
-        result = tool.execute("some query")
-        assert "Error" in str(result)
+        with pytest.raises(GraphRAGUnavailableError, match="Vector retrieval failed"):
+            tool.execute("some query")
+
+    def test_patient_context_requires_source(self):
+        tool = self._make_tool(MULTI_TARGET_CONFIG)
+
+        result = tool.execute(
+            {"query": "prescribed dosage", "target": "patient_context"}
+        )
+
+        assert result == "Error: patient_context retrieval requires an exact source filename."
+
+    def test_source_mismatch_stops_before_retrieval(self):
+        tool = self._make_tool(MULTI_TARGET_CONFIG)
+
+        with patch.object(tool, "_vector_search") as vector_search:
+            result = tool.execute(
+                {
+                    "query": "Extract dosage from [Scanned_Prescription_Image_01]",
+                    "target": "patient_context",
+                    "source": "infective_endocarditis_extreme_embolism.pdf",
+                    "source_slug": "infective_endocarditis_extreme_embolism",
+                }
+            )
+
+        vector_search.assert_not_called()
+        assert result["found"] is False
+        assert result["empty"]["code"] == "source_mismatch"
+
+    def test_matching_source_reference_is_removed_from_semantic_query(self):
+        tool = self._make_tool(MULTI_TARGET_CONFIG)
+
+        with (
+            patch.object(tool, "_vector_search", return_value=[]) as vector_search,
+            patch.object(tool, "_graph_context", return_value=[]),
+        ):
+            result = tool.execute(
+                {
+                    "query": "Extract dosage from [Adobe Scan 24 Jul 2026]",
+                    "target": "patient_context",
+                    "source": "Adobe Scan 24 Jul 2026.pdf",
+                    "source_slug": "Adobe Scan 24 Jul 2026",
+                }
+            )
+
+        assert vector_search.call_args.args[0] == "Extract dosage from"
+        assert result["empty"]["code"] == "source_not_indexed"
+
+    def test_patient_vector_search_filters_exact_source_and_scope(self):
+        tool = self._make_tool(MULTI_TARGET_CONFIG)
+        mock_client = MagicMock()
+        mock_client.collection_exists.return_value = True
+        hit = MagicMock()
+        hit.score = 0.81
+        hit.payload = {
+            "source": "patient.pdf",
+            "scope": "patient_context",
+            "content": "Medication evidence.",
+            "chunk_index": 4,
+        }
+        mock_client.query_points.return_value.points = [hit]
+        mock_embedder = MagicMock()
+        mock_embedder.encode.return_value = [0.0] * 384
+        tool._qdrant = mock_client
+        tool._embedder = mock_embedder
+
+        target = tool._target_config("patient_context")
+        results = tool._vector_search(
+            "dosage",
+            fetch_limit=5,
+            target=target,
+            source="patient.pdf",
+        )
+
+        query_call = mock_client.query_points.call_args
+        assert query_call.kwargs["collection_name"] == "patient_context"
+        conditions = query_call.kwargs["query_filter"].must
+        assert [(condition.key, condition.match.value) for condition in conditions] == [
+            ("scope", "patient_context"),
+            ("source", "patient.pdf"),
+        ]
+        assert results[0]["collection"] == "patient_context"
+
+    def test_patient_graph_search_filters_scope_and_source_slug(self):
+        tool = self._make_tool(MULTI_TARGET_CONFIG)
+        driver = MagicMock()
+        session = driver.session.return_value.__enter__.return_value
+        session.run.return_value = []
+        tool._driver = driver
+
+        tool._graph_context(
+            ["dosage"],
+            limit=5,
+            target=tool._target_config("patient_context"),
+            graph_source="patient_chunks",
+        )
+
+        call = session.run.call_args
+        assert call.kwargs["scope"] == "patient_context"
+        assert call.kwargs["source"] == "patient_chunks"
 
 
 # ---------------------------------------------------------------------------
@@ -185,3 +306,18 @@ class TestCaching:
         tool.cached_execute("query A")
         tool.cached_execute("query B")
         assert call_count == 2
+
+    def test_mapping_key_order_does_not_split_cache_entries(self):
+        tool = GraphRAGTool(BASE_CONFIG)
+        call_count = 0
+
+        def fake_execute(query):
+            nonlocal call_count
+            call_count += 1
+            return {"found": False, "vector_results": [], "graph_facts": []}
+
+        tool.execute = fake_execute  # type: ignore[method-assign]
+        tool.cached_execute({"query": "same", "target": "literature"})
+        tool.cached_execute({"target": "literature", "query": "same"})
+
+        assert call_count == 1

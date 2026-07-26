@@ -844,6 +844,13 @@ agentic_reasoning:
       embedding_model: BAAI/bge-small-en-v1.5
       model_cache_dir: data/models
       scope: literature
+      retrieval_targets:
+      - name: patient_context
+        collection: patient_context
+        scope: patient_context
+      - name: literature
+        collection: medical_papers
+        scope: literature
       min_relevance_score: 0.35
       limit: 3
       neo4j_limit: 10

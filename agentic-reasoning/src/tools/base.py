@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+import json
 from typing import Any, Dict
 
 from cachetools import TTLCache
@@ -17,8 +18,12 @@ class BaseTool(ABC):
         ...
 
     def cached_execute(self, input: Any) -> Any:
-        """Execute with TTL caching keyed on the string representation of input."""
-        key = input if isinstance(input, str) else str(input)
+        """Execute with TTL caching keyed on a canonical representation of input."""
+        key = (
+            input
+            if isinstance(input, str)
+            else json.dumps(input, sort_keys=True, separators=(",", ":"))
+        )
         if key not in self._cache:
             self._cache[key] = self.execute(input)
         return self._cache[key]
