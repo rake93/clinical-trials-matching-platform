@@ -216,7 +216,7 @@ The `Agent` class (`src/agent.py`) is the sole reasoning entry point. It holds o
 | `ollama/` | `http://localhost:11434` | `LLM_BASE_URL` or `OLLAMA_BASE_URL` |
 | `sglang/` | `http://localhost:30000/v1` | `SGLANG_BASE_URL` |
 
-The checked-in policy uses `sglang/Qwen/Qwen2.5-7B-Instruct` as primary and `lmstudio/${LLM_MODEL}` as explicit fallback. Synthesis health-checks providers before invocation and retries the fallback after a primary transport failure; if both are unavailable, the API returns a retryable `503`. Run `make validate` to check the same primary/fallback path plus Qdrant and Neo4j.
+The checked-in policy uses `sglang/Qwen/Qwen2.5-7B-Instruct` as primary and `lmstudio/${LLM_MODEL}` as explicit fallback. Both providers share a 4,096-token synthesis envelope: `model_params.max_tokens` reserves output, `prompt_safety_margin_tokens` absorbs tokenizer variance, and `Agent` deterministically fits ranked evidence into the remaining prompt budget without mutating cached provenance. Synthesis health-checks providers before invocation and retries the fallback only before visible output; provider failures become typed HTTP/SSE errors. Run `make validate` to check the same primary/fallback path plus Qdrant and Neo4j.
 
 ### GraphRAGTool
 

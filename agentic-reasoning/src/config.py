@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_CONFIG_PATH = _REPO_ROOT / "config" / "app.yaml"
@@ -23,7 +23,7 @@ APP_CONFIG_PATH = _REPO_ROOT / "config" / "app.yaml"
 
 class ModelParams(BaseModel):
     temperature: float = 0.1
-    max_tokens: Optional[int] = 4096
+    max_tokens: int = Field(default=1024, gt=0)
     top_p: float = 0.9
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
@@ -74,6 +74,8 @@ class AgentConfig(BaseModel):
     model: str = "lmstudio/qwen3-8b"
     fallback_model: Optional[str] = None
     health_check_timeout_seconds: float = Field(default=2.0, gt=0.0, le=30.0)
+    context_window_tokens: int = Field(default=4096, gt=0)
+    prompt_safety_margin_tokens: int = Field(default=256, ge=0)
     system_prompt: str = (
         "You are a clinical research assistant. "
         "Answer ONLY using the evidence retrieved from the knowledge base. "
@@ -81,6 +83,18 @@ class AgentConfig(BaseModel):
     )
     model_params: ModelParams = Field(default_factory=ModelParams)
     graphrag: GraphRAGConfig = Field(default_factory=GraphRAGConfig)
+
+    @model_validator(mode="after")
+    def synthesis_budget_fits_context(self) -> "AgentConfig":
+        reserved = (
+            self.model_params.max_tokens + self.prompt_safety_margin_tokens
+        )
+        if reserved >= self.context_window_tokens:
+            raise ValueError(
+                "model_params.max_tokens + prompt_safety_margin_tokens must be "
+                "smaller than context_window_tokens"
+            )
+        return self
 
     @field_validator("model")
     @classmethod
@@ -156,6 +170,11 @@ def load_config(path: Path | None = None) -> AgentConfig:
         model=agent_section.get("model", ar.get("defaults", {}).get("model", "lmstudio/qwen3-8b")),
         fallback_model=agent_section.get("fallback_model"),
         health_check_timeout_seconds=agent_section.get("health_check_timeout_seconds", 2.0),
+        context_window_tokens=agent_section.get("context_window_tokens", 4096),
+        prompt_safety_margin_tokens=agent_section.get(
+            "prompt_safety_margin_tokens",
+            256,
+        ),
         system_prompt=agent_section.get("system_prompt", AgentConfig.model_fields["system_prompt"].default),
         model_params=ModelParams(**model_params_data) if model_params_data else ModelParams(),
         graphrag=GraphRAGConfig(**graphrag_data) if graphrag_data else GraphRAGConfig(),

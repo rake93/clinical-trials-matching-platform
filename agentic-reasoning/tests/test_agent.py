@@ -7,14 +7,20 @@ The key invariant: Phase 1 (GraphRAG) is ALWAYS called before the LLM.
 from __future__ import annotations
 
 import json
+import copy
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
+from openai import APIError
 import pytest
+from pydantic import ValidationError
 
 from src.agent import (
     Agent,
     LLMUnavailableError,
+    SynthesisInputTooLargeError,
+    _estimate_message_tokens,
     _format_evidence,
     _NO_EVIDENCE_RESPONSE,
     _strip_reasoning_block,
@@ -100,6 +106,14 @@ def _health(model: str, available: bool, detail: str | None = None) -> LLMHealth
         ),
         available=available,
         detail=detail,
+    )
+
+
+def _api_error(message: str) -> APIError:
+    return APIError(
+        message,
+        request=httpx.Request("POST", "http://localhost:1234/v1/chat/completions"),
+        body=None,
     )
 
 
@@ -213,6 +227,118 @@ class TestPhase2Synthesis:
 
         assert result.text == "Grounded answer"
 
+    def test_oversized_evidence_is_bounded_without_mutating_retrieval(self):
+        evidence = copy.deepcopy(EVIDENCE_WITH_RESULTS)
+        evidence["vector_results"] = [
+            {
+                "score": 0.99,
+                "content": "highest-ranked " * 600,
+                "source": "top.pdf",
+                "chunk_id": "top-chunk",
+            },
+            {
+                "score": 0.80,
+                "content": "lower-ranked " * 600,
+                "source": "lower.pdf",
+                "chunk_id": "lower-chunk",
+            },
+        ]
+        original = copy.deepcopy(evidence)
+        agent = _make_agent(evidence)
+        agent.config = AgentConfig(
+            model="lmstudio/test-model",
+            system_prompt="Use only supplied evidence.",
+            context_window_tokens=512,
+            prompt_safety_margin_tokens=64,
+            model_params=ModelParams(max_tokens=128),
+        )
+
+        messages = agent._build_messages("extract dosage", evidence)
+        prompt_budget = 512 - 128 - 64
+        estimated = _estimate_message_tokens(
+            str(messages[0].content),
+            str(messages[1].content),
+        )
+
+        assert estimated <= prompt_budget
+        assert "top.pdf" in messages[1].content
+        assert "top-chunk" in messages[1].content
+        assert "content truncated" in messages[1].content
+        assert "lower.pdf" not in messages[1].content
+        assert evidence == original
+
+    def test_graph_facts_are_bounded_with_omission_metadata(self):
+        evidence = copy.deepcopy(EVIDENCE_WITH_RESULTS)
+        evidence["vector_results"] = []
+        evidence["graph_facts"] = [
+            f"DRUG{i} --[TREATS]--> CONDITION{i}" for i in range(200)
+        ]
+        agent = _make_agent(evidence)
+        agent.config = AgentConfig(
+            model="lmstudio/test-model",
+            system_prompt="Use only supplied evidence.",
+            context_window_tokens=512,
+            prompt_safety_margin_tokens=64,
+            model_params=ModelParams(max_tokens=128),
+        )
+
+        messages = agent._build_messages("summarize graph", evidence)
+
+        assert "Knowledge graph facts:" in messages[1].content
+        assert "graph fact(s) omitted" in messages[1].content
+        assert _estimate_message_tokens(
+            str(messages[0].content),
+            str(messages[1].content),
+        ) <= 320
+
+    def test_fixed_prompt_overflow_is_rejected_before_llm_selection(self):
+        agent = _make_agent(EVIDENCE_WITH_RESULTS)
+        agent.config = AgentConfig(
+            model="lmstudio/test-model",
+            system_prompt="Use only supplied evidence.",
+            context_window_tokens=128,
+            prompt_safety_margin_tokens=16,
+            model_params=ModelParams(max_tokens=32),
+        )
+
+        with pytest.raises(
+            SynthesisInputTooLargeError,
+            match="system prompt and query exceed",
+        ):
+            agent.prepare_synthesis_stream("q" * 1000, EVIDENCE_WITH_RESULTS)
+
+        agent._select_synthesis_llm.assert_not_called()
+
+    def test_prompt_with_only_omission_metadata_is_rejected(self):
+        evidence = copy.deepcopy(EVIDENCE_WITH_RESULTS)
+        evidence["vector_results"][0]["content"] = "evidence " * 100
+        evidence["graph_facts"] = []
+        agent = _make_agent(evidence)
+        agent.config = AgentConfig(
+            model="lmstudio/test-model",
+            system_prompt="Use only supplied evidence.",
+            context_window_tokens=160,
+            prompt_safety_margin_tokens=16,
+            model_params=ModelParams(max_tokens=32),
+        )
+
+        with pytest.raises(
+            SynthesisInputTooLargeError,
+            match="insufficient context capacity",
+        ):
+            agent.prepare_synthesis_stream("q" * 180, evidence)
+
+        agent._select_synthesis_llm.assert_not_called()
+
+    def test_config_rejects_output_reservation_that_consumes_context(self):
+        with pytest.raises(ValidationError, match="must be smaller"):
+            AgentConfig(
+                model="lmstudio/test-model",
+                context_window_tokens=4096,
+                prompt_safety_margin_tokens=256,
+                model_params=ModelParams(max_tokens=4096),
+            )
+
 
 class TestSynthesisFailover:
     def test_uses_fallback_after_primary_health_check_fails(self):
@@ -289,6 +415,53 @@ class TestSynthesisFailover:
                 next(events)
 
         agent.fallback_llm.stream.assert_not_called()
+
+    def test_generic_openai_api_error_is_normalized_for_streaming(self):
+        agent = _make_agent(EVIDENCE_WITH_RESULTS)
+        agent.llm.stream.side_effect = _api_error("context overflow")
+
+        prepared = agent.prepare_synthesis_stream("query", EVIDENCE_WITH_RESULTS)
+
+        with pytest.raises(LLMUnavailableError, match="APIError: context overflow"):
+            list(prepared.events)
+
+    def test_generic_openai_api_error_is_normalized_for_blocking(self):
+        agent = _make_agent(EVIDENCE_WITH_RESULTS)
+        agent.llm.invoke.side_effect = _api_error("context overflow")
+
+        with pytest.raises(LLMUnavailableError, match="APIError: context overflow"):
+            agent.synthesize("query", EVIDENCE_WITH_RESULTS)
+
+    def test_primary_and_fallback_receive_identical_bounded_messages(self):
+        agent = _make_failover_agent()
+        evidence = copy.deepcopy(EVIDENCE_WITH_RESULTS)
+        evidence["vector_results"][0]["content"] = "clinical evidence " * 2000
+        agent.llm.stream.side_effect = _api_error("primary unavailable")
+        agent.fallback_llm.stream.return_value = iter(
+            [MagicMock(content="Fallback answer")]
+        )
+
+        with patch(
+            "src.agent.check_llm_health",
+            side_effect=[
+                _health(agent.config.model, True),
+                _health(agent.config.fallback_model or "", True),
+            ],
+        ):
+            prepared = agent.prepare_synthesis_stream("query", evidence)
+            list(prepared.events)
+
+        primary_messages = agent.llm.stream.call_args.args[0]
+        fallback_messages = agent.fallback_llm.stream.call_args.args[0]
+        assert primary_messages is fallback_messages
+        assert _estimate_message_tokens(
+            str(primary_messages[0].content),
+            str(primary_messages[1].content),
+        ) <= (
+            agent.config.context_window_tokens
+            - agent.config.model_params.max_tokens
+            - agent.config.prompt_safety_margin_tokens
+        )
 
 
 # ---------------------------------------------------------------------------

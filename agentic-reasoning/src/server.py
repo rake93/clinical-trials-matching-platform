@@ -555,10 +555,19 @@ async def synthesis(req: SynthesisRequest) -> JSONResponse:
         if not isinstance(ev, dict):
             ev = {"found": False}
 
-    from .agent import LLMUnavailableError
+    from .agent import LLMUnavailableError, SynthesisInputTooLargeError
 
     try:
         result = await loop.run_in_executor(None, agent.synthesize, req.query, ev)
+    except SynthesisInputTooLargeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "synthesis_input_too_large",
+                "message": exc.detail,
+                "retryable": False,
+            },
+        ) from exc
     except LLMUnavailableError as exc:
         logger.warning("Synthesis unavailable: error=%s", exc.detail)
         raise HTTPException(
@@ -587,7 +596,7 @@ async def synthesis_stream(req: SynthesisStreamRequest) -> StreamingResponse:
     evidence = _require_cached_evidence(req.query, req.evidenceId)
     loop = asyncio.get_event_loop()
 
-    from .agent import LLMUnavailableError
+    from .agent import LLMUnavailableError, SynthesisInputTooLargeError
 
     try:
         prepared = await loop.run_in_executor(
@@ -596,6 +605,15 @@ async def synthesis_stream(req: SynthesisStreamRequest) -> StreamingResponse:
             req.query,
             evidence,
         )
+    except SynthesisInputTooLargeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "synthesis_input_too_large",
+                "message": exc.detail,
+                "retryable": False,
+            },
+        ) from exc
     except LLMUnavailableError as exc:
         raise HTTPException(
             status_code=503,

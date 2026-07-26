@@ -10,6 +10,7 @@ import pytest
 from src.agent import (
     LLMUnavailableError,
     PreparedSynthesisStream,
+    SynthesisInputTooLargeError,
     SynthesisResult,
     SynthesisStreamEvent,
 )
@@ -211,6 +212,29 @@ def test_synthesis_returns_retryable_503_when_no_provider_is_available(
     }
 
 
+def test_synthesis_returns_typed_preflight_budget_error(
+    client: TestClient,
+    mock_agent: MagicMock,
+) -> None:
+    match_response = client.post("/api/match", data={"query": "clinical query"})
+    evidence_id = match_response.json()["evidenceId"]
+    mock_agent.synthesize.side_effect = SynthesisInputTooLargeError(
+        "Shorten the query and retry."
+    )
+
+    response = client.post(
+        "/api/synthesis",
+        json={"query": "clinical query", "evidenceId": evidence_id},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "synthesis_input_too_large",
+        "message": "Shorten the query and retry.",
+        "retryable": False,
+    }
+
+
 def test_synthesis_stream_emits_metadata_tokens_and_done(
     client: TestClient,
     mock_agent: MagicMock,
@@ -240,6 +264,57 @@ def test_synthesis_stream_emits_metadata_tokens_and_done(
     assert '"text":" answer"' in response.text
     assert response.text.rstrip().endswith('data: {"type":"done"}')
     mock_agent.prepare_synthesis_stream.assert_called_once()
+
+
+def test_synthesis_stream_returns_typed_preflight_budget_error(
+    client: TestClient,
+    mock_agent: MagicMock,
+) -> None:
+    match_response = client.post("/api/match", data={"query": "clinical query"})
+    evidence_id = match_response.json()["evidenceId"]
+    mock_agent.prepare_synthesis_stream.side_effect = SynthesisInputTooLargeError(
+        "Shorten the query and retry."
+    )
+
+    response = client.post(
+        "/api/synthesis/stream",
+        json={"query": "clinical query", "evidenceId": evidence_id},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "synthesis_input_too_large",
+        "message": "Shorten the query and retry.",
+        "retryable": False,
+    }
+
+
+def test_synthesis_stream_emits_error_without_done_after_provider_failure(
+    client: TestClient,
+    mock_agent: MagicMock,
+) -> None:
+    match_response = client.post("/api/match", data={"query": "clinical query"})
+    evidence_id = match_response.json()["evidenceId"]
+
+    def failing_events():
+        raise LLMUnavailableError("context overflow")
+        yield
+
+    mock_agent.prepare_synthesis_stream.return_value = PreparedSynthesisStream(
+        model="lmstudio/test-model",
+        fallback_used=True,
+        events=failing_events(),
+    )
+
+    response = client.post(
+        "/api/synthesis/stream",
+        json={"query": "clinical query", "evidenceId": evidence_id},
+    )
+
+    assert response.status_code == 200
+    assert '"type":"error"' in response.text
+    assert '"code":"synthesis_unavailable"' in response.text
+    assert '"type":"done"' not in response.text
 
 
 def test_synthesis_stream_rejects_unknown_evidence(

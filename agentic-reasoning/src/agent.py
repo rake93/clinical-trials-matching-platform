@@ -12,6 +12,7 @@ Phase 2 — Evidence-grounded synthesis:
 from __future__ import annotations
 
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, Literal
 
 import httpx
-from openai import APIConnectionError, APITimeoutError
+from openai import APIError
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .config import AgentConfig, load_config
@@ -32,10 +33,27 @@ _NO_EVIDENCE_RESPONSE = "No evidence found for this query."
 _THINK_BLOCK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.DOTALL)
 _THINK_START = "<think>"
 _THINK_END = "</think>"
+_TOKEN_ESTIMATE_BYTES_PER_TOKEN = 3
+_CHAT_MESSAGE_OVERHEAD_TOKENS = 16
+_GRAPH_FACT_TOKEN_CAP = 384
+_PROVIDER_ERRORS = (
+    APIError,
+    httpx.HTTPError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 class LLMUnavailableError(RuntimeError):
     """Raised when neither the configured primary nor fallback LLM can serve."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
+class SynthesisInputTooLargeError(ValueError):
+    """Raised when fixed synthesis input leaves no room for grounded evidence."""
 
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
@@ -70,6 +88,17 @@ class PreparedSynthesisStream:
     events: Iterator[SynthesisStreamEvent]
 
 
+@dataclass(frozen=True)
+class EvidenceBudgetStats:
+    """PHI-safe counts describing the evidence included in an LLM prompt."""
+
+    included_vector_results: int
+    omitted_vector_results: int
+    included_graph_facts: int
+    omitted_graph_facts: int
+    content_truncated: bool
+
+
 @dataclass
 class RunResult:
     query: str
@@ -84,6 +113,30 @@ class RunResult:
         self.found = bool(self.evidence.get("found", False))
 
 
+def _estimate_text_tokens(text: str) -> int:
+    """Conservatively estimate local-model tokens without loading a tokenizer."""
+    return math.ceil(len(text.encode("utf-8")) / _TOKEN_ESTIMATE_BYTES_PER_TOKEN)
+
+
+def _estimate_message_tokens(system_content: str, user_content: str) -> int:
+    """Estimate two chat messages including template and assistant-prefix overhead."""
+    return (
+        _estimate_text_tokens(system_content)
+        + _estimate_text_tokens(user_content)
+        + _CHAT_MESSAGE_OVERHEAD_TOKENS
+    )
+
+
+def _vector_result_block(index: int, hit: dict[str, Any], content: str) -> str:
+    source = hit.get("source", "unknown")
+    score = hit.get("score", 0)
+    chunk_id = hit.get("chunk_id", "unknown")
+    return (
+        f"[{index}] source={source} chunk_id={chunk_id} score={score:.4f}\n"
+        f"{content}"
+    )
+
+
 def _format_evidence(evidence: dict[str, Any]) -> str:
     """Render GraphRAG output as a readable evidence block for the LLM."""
     if not evidence.get("found", False):
@@ -93,10 +146,8 @@ def _format_evidence(evidence: dict[str, Any]) -> str:
 
     vector_results: list[dict] = evidence.get("vector_results", [])
     for i, hit in enumerate(vector_results, 1):
-        source = hit.get("source", "unknown")
-        score = hit.get("score", 0)
         content = hit.get("content", "").strip()
-        parts.append(f"[{i}] source={source} score={score:.4f}\n{content}")
+        parts.append(_vector_result_block(i, hit, content))
 
     graph_facts: list[str] = evidence.get("graph_facts", [])
     if graph_facts:
@@ -104,6 +155,125 @@ def _format_evidence(evidence: dict[str, Any]) -> str:
         parts.extend(f"  • {fact}" for fact in graph_facts)
 
     return "\n\n".join(parts) if parts else "No evidence retrieved."
+
+
+def _format_bounded_evidence(
+    evidence: dict[str, Any],
+    token_budget: int,
+) -> tuple[str, EvidenceBudgetStats]:
+    """Fit ranked evidence into a conservative token budget without mutation."""
+    vector_results: list[dict[str, Any]] = list(
+        evidence.get("vector_results", [])
+    )
+    graph_facts = [str(fact) for fact in evidence.get("graph_facts", [])]
+
+    included_graph_facts = 0
+    graph_lines: list[str] = []
+    if graph_facts and token_budget > 0:
+        graph_budget = min(
+            token_budget,
+            _GRAPH_FACT_TOKEN_CAP,
+            max(64, token_budget // 5),
+        )
+        graph_lines = ["Knowledge graph facts:"]
+        for fact in graph_facts:
+            candidate = "\n".join([*graph_lines, f"- {fact}"])
+            if _estimate_text_tokens(candidate) > graph_budget:
+                break
+            graph_lines.append(f"- {fact}")
+            included_graph_facts += 1
+
+        omitted_graph_facts = len(graph_facts) - included_graph_facts
+        while omitted_graph_facts:
+            omission = (
+                f"[{omitted_graph_facts} graph fact(s) omitted to fit context]"
+            )
+            candidate = "\n".join([*graph_lines, omission])
+            if _estimate_text_tokens(candidate) <= graph_budget:
+                graph_lines.append(omission)
+                break
+            if included_graph_facts == 0:
+                break
+            graph_lines.pop()
+            included_graph_facts -= 1
+            omitted_graph_facts += 1
+        if len(graph_lines) == 1:
+            graph_lines = []
+
+    graph_text = "\n".join(graph_lines)
+    vector_blocks: list[str] = []
+    vector_note = ""
+    content_truncated = False
+
+    def render(
+        blocks: list[str],
+        note: str = "",
+    ) -> str:
+        parts = [*blocks]
+        if note:
+            parts.append(note)
+        if graph_text:
+            parts.append(graph_text)
+        return "\n\n".join(parts)
+
+    for index, hit in enumerate(vector_results, 1):
+        content = str(hit.get("content", "")).strip()
+        full_block = _vector_result_block(index, hit, content)
+        if _estimate_text_tokens(render([*vector_blocks, full_block])) <= token_budget:
+            vector_blocks.append(full_block)
+            continue
+
+        lower_ranked = len(vector_results) - index
+        marker = "[content truncated to fit synthesis context"
+        if lower_ranked:
+            marker += f"; {lower_ranked} lower-ranked hit(s) omitted"
+        marker += "]"
+        header = _vector_result_block(index, hit, "").rstrip()
+
+        low = 0
+        high = len(content)
+        best_block = ""
+        while low <= high:
+            midpoint = (low + high) // 2
+            prefix = content[:midpoint].rstrip()
+            partial_block = f"{header}\n{prefix}\n{marker}"
+            if (
+                _estimate_text_tokens(render([*vector_blocks, partial_block]))
+                <= token_budget
+            ):
+                best_block = partial_block
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+
+        if best_block and high > 0:
+            vector_blocks.append(best_block)
+            content_truncated = True
+        break
+
+    included_vector_results = len(vector_blocks)
+    omitted_vector_results = (
+        len(vector_results) - included_vector_results
+    )
+    if omitted_vector_results and not content_truncated:
+        candidate_note = (
+            f"[{omitted_vector_results} vector hit(s) omitted to fit context]"
+        )
+        if (
+            _estimate_text_tokens(render(vector_blocks, candidate_note))
+            <= token_budget
+        ):
+            vector_note = candidate_note
+
+    formatted = render(vector_blocks, vector_note)
+    stats = EvidenceBudgetStats(
+        included_vector_results=included_vector_results,
+        omitted_vector_results=omitted_vector_results,
+        included_graph_facts=included_graph_facts,
+        omitted_graph_facts=len(graph_facts) - included_graph_facts,
+        content_truncated=content_truncated,
+    )
+    return formatted, stats
 
 
 def _strip_reasoning_block(text: str) -> str:
@@ -190,11 +360,60 @@ class Agent:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_messages(self, query: str, evidence: dict[str, Any]) -> list:
-        context = _format_evidence(evidence)
-        user_content = (
-            f"[QUERY]\n{query}\n\n"
-            f"[EVIDENCE]\n{context}\n[/EVIDENCE]"
+    def _build_messages(self, query: str, evidence: dict[str, Any]) -> list[Any]:
+        prompt_budget = (
+            self.config.context_window_tokens
+            - self.config.model_params.max_tokens
+            - self.config.prompt_safety_margin_tokens
+        )
+        user_prefix = f"[QUERY]\n{query}\n\n[EVIDENCE]\n"
+        user_suffix = "\n[/EVIDENCE]"
+        fixed_user_content = f"{user_prefix}{user_suffix}"
+        fixed_tokens = _estimate_message_tokens(
+            self.config.system_prompt,
+            fixed_user_content,
+        )
+        evidence_budget = prompt_budget - fixed_tokens
+        if evidence_budget <= 0:
+            raise SynthesisInputTooLargeError(
+                "The system prompt and query exceed the configured synthesis "
+                "input budget. Shorten the query and retry."
+            )
+
+        context, stats = _format_bounded_evidence(evidence, evidence_budget)
+        if (
+            not context
+            or (
+                stats.included_vector_results == 0
+                and stats.included_graph_facts == 0
+            )
+        ):
+            raise SynthesisInputTooLargeError(
+                "The query leaves insufficient context capacity for retrieved "
+                "evidence. Shorten the query and retry."
+            )
+
+        user_content = f"{user_prefix}{context}{user_suffix}"
+        estimated_tokens = _estimate_message_tokens(
+            self.config.system_prompt,
+            user_content,
+        )
+        if estimated_tokens > prompt_budget:
+            raise SynthesisInputTooLargeError(
+                "The bounded synthesis prompt exceeds the configured input budget."
+            )
+
+        logger.info(
+            "event=synthesis_prompt_built estimated_tokens=%d prompt_budget=%d "
+            "vector_included=%d vector_omitted=%d graph_included=%d "
+            "graph_omitted=%d content_truncated=%s",
+            estimated_tokens,
+            prompt_budget,
+            stats.included_vector_results,
+            stats.omitted_vector_results,
+            stats.included_graph_facts,
+            stats.omitted_graph_facts,
+            stats.content_truncated,
         )
         return [
             SystemMessage(content=self.config.system_prompt),
@@ -243,7 +462,7 @@ class Agent:
         llm, model, fallback_used = self._select_synthesis_llm()
         try:
             response = llm.invoke(messages)
-        except (APIConnectionError, APITimeoutError, httpx.HTTPError, ConnectionError, TimeoutError) as exc:
+        except _PROVIDER_ERRORS as exc:
             if fallback_used or not self.config.fallback_model or self.fallback_llm is None:
                 raise LLMUnavailableError(
                     f"Synthesis invocation failed for {model}: {type(exc).__name__}: {exc}"
@@ -270,7 +489,7 @@ class Agent:
             )
             try:
                 response = self.fallback_llm.invoke(messages)
-            except (APIConnectionError, APITimeoutError, httpx.HTTPError, ConnectionError, TimeoutError) as fallback_exc:
+            except _PROVIDER_ERRORS as fallback_exc:
                 raise LLMUnavailableError(
                     f"Synthesis invocation failed for fallback {fallback_model}: "
                     f"{type(fallback_exc).__name__}: {fallback_exc}"
@@ -302,13 +521,7 @@ class Agent:
                 emitted_token = True
                 yield SynthesisStreamEvent(type="token", text=token)
             return
-        except (
-            APIConnectionError,
-            APITimeoutError,
-            httpx.HTTPError,
-            ConnectionError,
-            TimeoutError,
-        ) as exc:
+        except _PROVIDER_ERRORS as exc:
             fallback_model = self.config.fallback_model
             if (
                 emitted_token
@@ -347,13 +560,7 @@ class Agent:
             try:
                 for token in _visible_stream_tokens(self.fallback_llm.stream(messages)):
                     yield SynthesisStreamEvent(type="token", text=token)
-            except (
-                APIConnectionError,
-                APITimeoutError,
-                httpx.HTTPError,
-                ConnectionError,
-                TimeoutError,
-            ) as fallback_exc:
+            except _PROVIDER_ERRORS as fallback_exc:
                 raise LLMUnavailableError(
                     f"Synthesis stream failed for fallback {fallback_model}: "
                     f"{type(fallback_exc).__name__}: {fallback_exc}"

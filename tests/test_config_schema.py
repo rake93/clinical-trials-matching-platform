@@ -159,6 +159,19 @@ class TestAgenticReasoningConfig:
                     f"agent {agent_key!r}: temperature out of range"
                 )
 
+    def test_synthesis_budget_fits_context_window(self):
+        for agent_key, agent_cfg in self._agent_configs.items():
+            context_window = agent_cfg["context_window_tokens"]
+            safety_margin = agent_cfg["prompt_safety_margin_tokens"]
+            output_tokens = agent_cfg["model_params"]["max_tokens"]
+            assert context_window > 0
+            assert safety_margin >= 0
+            assert output_tokens > 0
+            assert output_tokens + safety_margin < context_window, (
+                f"agent {agent_key!r}: output reservation and safety margin "
+                "must leave room for the synthesis prompt"
+            )
+
     def test_reasoning_agent_has_explicit_fallback_and_retrieval_guardrails(self):
         agent = self._ar["agent"]
         graphrag = self._ar["graphrag"]["config"]
