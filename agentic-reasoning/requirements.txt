@@ -1,0 +1,17 @@
+# Runtime deps needed for unit tests.
+# Heavy ML packages (sentence-transformers, qdrant-client, neo4j) are
+# lazy-imported inside GraphRAGTool methods and fully mocked in tests.
+click>=8.3.1
+fastapi>=0.110.0
+httpx
+langchain>=1.2.10
+langchain-core
+langchain-openai>=0.3.0
+openai
+pydantic>=2.12.5
+python-multipart>=0.0.9
+pyyaml>=6.0.3
+rich>=14.3.2
+cachetools>=5.3.0
+uvicorn[standard]>=0.27.0
+anyio
