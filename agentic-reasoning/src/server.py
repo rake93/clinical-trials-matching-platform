@@ -21,7 +21,7 @@ import re
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -80,7 +80,7 @@ def _cache_put(query: str, evidence: dict) -> str:
     return evidence_id
 
 
-def _cache_get(evidence_id: str) -> Optional[dict]:
+def _cache_get(evidence_id: str) -> dict | None:
     return _evidence_cache.get(evidence_id)
 
 
@@ -89,7 +89,7 @@ def _cache_get(evidence_id: str) -> Optional[dict]:
 _GRAPH_FACT_RE = re.compile(r"^(.+?)\s+--\[(.+?)\]-->\s+(.+)$")
 
 
-def _parse_graph_fact(fact: str) -> Optional[dict]:
+def _parse_graph_fact(fact: str) -> dict | None:
     m = _GRAPH_FACT_RE.match(fact.strip())
     if not m:
         return None
@@ -145,10 +145,10 @@ def _graphrag_to_matches(evidence: dict) -> list[dict]:
 async def match(
     query: str = Form(...),
     target: Literal["literature", "patient_context"] = Form(default="literature"),
-    source: Optional[str] = Form(default=None),
-    source_slug: Optional[str] = Form(default=None),
+    source: str | None = Form(default=None),
+    source_slug: str | None = Form(default=None),
     top_k: int = Form(default=10, ge=1, le=50),
-    file: Optional[UploadFile] = File(default=None),
+    file: UploadFile | None = File(default=None),
 ) -> JSONResponse:
     """Phase 1 — GraphRAG hybrid retrieval. Returns matches for the UI."""
     if target == "patient_context" and not source:
@@ -269,13 +269,13 @@ async def stats() -> JSONResponse:
         if manifest.exists():
             try:
                 return JSONResponse(json.loads(manifest.read_text()))
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
         report = run / "retrieval.json"
         if report.exists():
             try:
                 return JSONResponse({"run_id": run.name, **json.loads(report.read_text())})
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
     return JSONResponse(None)
 
@@ -384,7 +384,7 @@ async def heatmap(query: str, chunk_index: int = 0) -> JSONResponse:
     loop = asyncio.get_event_loop()
 
     # Retrieve the chunk from Qdrant by chunk_index payload filter
-    def _fetch_chunk() -> Optional[str]:
+    def _fetch_chunk() -> str | None:
         try:
             from qdrant_client.http.models import Filter, FieldCondition, MatchValue
             hits = graphrag._qdrant_client().scroll(
@@ -407,7 +407,7 @@ async def heatmap(query: str, chunk_index: int = 0) -> JSONResponse:
                 with_payload=True,
             )[0]
             return hits[0].payload.get("content", "") if hits else None
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("heatmap fetch failed: %s", exc)
             return None
 
@@ -434,7 +434,7 @@ async def heatmap(query: str, chunk_index: int = 0) -> JSONResponse:
 async def subgraph(
     entity: str,
     target: Literal["literature", "patient_context"] = "literature",
-    source_slug: Optional[str] = None,
+    source_slug: str | None = None,
 ) -> JSONResponse:
     """Return 1-hop Neo4j neighbourhood for an entity (D3 force-graph format)."""
     if target == "patient_context" and not source_slug:

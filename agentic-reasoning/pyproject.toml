@@ -26,6 +26,19 @@ dependencies = [
 [project.scripts]
 clinical-agents = "src.cli:main"
 
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "BLE", "RUF"]
+ignore = [
+    "BLE001",   # broad Exception catches are intentional in top-level CLI/server handlers
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["E402"]
+"utils/*.py" = ["E402"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

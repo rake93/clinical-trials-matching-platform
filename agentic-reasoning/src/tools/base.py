@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 import json
-from typing import Any, Dict
+from typing import Any
 
 from cachetools import TTLCache
 
 
 class BaseTool(ABC):
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
         ttl = config.get("cache_ttl", 300)
         maxsize = config.get("cache_maxsize", 128)

@@ -4,7 +4,7 @@ import uuid
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 import subprocess
 
 
@@ -17,9 +17,9 @@ class ExecutionLogger:
         self.execution_id = str(uuid.uuid4())
         self.timestamp = datetime.now().isoformat()
         # Fetch git hash once at init rather than on every log call.
-        self._git_commit: Optional[str] = self._fetch_git_commit()
+        self._git_commit: str | None = self._fetch_git_commit()
 
-    def _fetch_git_commit(self) -> Optional[str]:
+    def _fetch_git_commit(self) -> str | None:
         """Get current git commit hash (called once at init)."""
         try:
             result = subprocess.run(
@@ -35,7 +35,7 @@ class ExecutionLogger:
             pass
         return None
 
-    def get_git_commit(self) -> Optional[str]:
+    def get_git_commit(self) -> str | None:
         return self._git_commit
 
     def log_execution(
@@ -49,12 +49,12 @@ class ExecutionLogger:
         tokens_output: int = 0,
         temperature: float = 0.7,
         top_p: float = 0.9,
-        tools_called: Optional[List[str]] = None,
+        tools_called: list[str] | None = None,
         tool_success_rate: float = 1.0,
-        tool_responses: Optional[Dict[str, Any]] = None,
-        router_confidence: Optional[float] = None,
-        router_intent: Optional[str] = None,
-        memory_snapshot: Optional[Dict[str, Any]] = None,
+        tool_responses: dict[str, Any] | None = None,
+        router_confidence: float | None = None,
+        router_intent: str | None = None,
+        memory_snapshot: dict[str, Any] | None = None,
     ) -> None:
         """Log a complete execution with all metadata (fire-and-forget via background thread)."""
         tokens_total = tokens_input + tokens_output

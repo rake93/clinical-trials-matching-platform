@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -50,8 +50,8 @@ class GraphRAGConfig(BaseModel):
     min_relevance_score: float = Field(default=0.35, ge=-1.0, le=1.0)
     limit: int = 3
     neo4j_limit: int = 10
-    reranker_model: Optional[str] = None
-    retrieval_k: Optional[int] = None
+    reranker_model: str | None = None
+    retrieval_k: int | None = None
     cache_ttl: int = 300
     cache_maxsize: int = 128
 
@@ -72,7 +72,7 @@ class GraphRAGConfig(BaseModel):
 
 class AgentConfig(BaseModel):
     model: str = "lmstudio/qwen3-8b"
-    fallback_model: Optional[str] = None
+    fallback_model: str | None = None
     health_check_timeout_seconds: float = Field(default=2.0, gt=0.0, le=30.0)
     context_window_tokens: int = Field(default=4096, gt=0)
     prompt_safety_margin_tokens: int = Field(default=256, ge=0)
@@ -85,7 +85,7 @@ class AgentConfig(BaseModel):
     graphrag: GraphRAGConfig = Field(default_factory=GraphRAGConfig)
 
     @model_validator(mode="after")
-    def synthesis_budget_fits_context(self) -> "AgentConfig":
+    def synthesis_budget_fits_context(self) -> AgentConfig:
         reserved = (
             self.model_params.max_tokens + self.prompt_safety_margin_tokens
         )
@@ -103,7 +103,7 @@ class AgentConfig(BaseModel):
 
     @field_validator("fallback_model")
     @classmethod
-    def fallback_model_has_provider_and_name(cls, value: Optional[str]) -> Optional[str]:
+    def fallback_model_has_provider_and_name(cls, value: str | None) -> str | None:
         if value is None:
             return None
         return cls._validate_model_identifier(value, field_name="fallback_model")

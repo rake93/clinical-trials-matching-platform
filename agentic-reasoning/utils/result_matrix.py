@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any
 from dataclasses import dataclass, asdict
 
 
@@ -14,14 +14,14 @@ class ExecutionRow:
     user_query: str
     model: str
     latency_ms: float
-    tools_called: List[str]
+    tools_called: list[str]
     tool_success_rate: float
     has_response: bool
     response_length: int
     tool_count: int
 
 
-def load_summary_jsonl(filepath: Path) -> List[Dict[str, Any]]:
+def load_summary_jsonl(filepath: Path) -> list[dict[str, Any]]:
     """Load JSONL summary file."""
     rows = []
     with open(filepath, 'r') as f:
@@ -31,7 +31,7 @@ def load_summary_jsonl(filepath: Path) -> List[Dict[str, Any]]:
     return rows
 
 
-def build_result_matrix(jsonl_rows: List[Dict[str, Any]]) -> List[ExecutionRow]:
+def build_result_matrix(jsonl_rows: list[dict[str, Any]]) -> list[ExecutionRow]:
     """Transform JSONL rows into result matrix."""
     matrix = []
     for row in jsonl_rows:
@@ -51,12 +51,12 @@ def build_result_matrix(jsonl_rows: List[Dict[str, Any]]) -> List[ExecutionRow]:
     return matrix
 
 
-def matrix_to_dicts(matrix: List[ExecutionRow]) -> List[Dict[str, Any]]:
+def matrix_to_dicts(matrix: list[ExecutionRow]) -> list[dict[str, Any]]:
     """Convert matrix to list of dicts for easy consumption."""
     return [asdict(row) for row in matrix]
 
 
-def get_matrix_from_file(filepath: Path = None) -> List[Dict[str, Any]]:
+def get_matrix_from_file(filepath: Path | None = None) -> list[dict[str, Any]]:
     """Load JSONL and return result matrix as list of dicts."""
     if filepath is None:
         filepath = Path(__file__).parent.parent / 'log' / 'summary.jsonl'
@@ -66,7 +66,7 @@ def get_matrix_from_file(filepath: Path = None) -> List[Dict[str, Any]]:
     return matrix_to_dicts(matrix)
 
 
-def print_matrix_summary(matrix: List[Dict[str, Any]]) -> None:
+def print_matrix_summary(matrix: list[dict[str, Any]]) -> None:
     """Print a formatted summary of the result matrix."""
     if not matrix:
         print("No results found")

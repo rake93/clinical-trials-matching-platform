@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def _build_agent() -> Agent:
     try:
         return Agent.from_config()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         console.print(f"[red]Failed to load agent config:[/red] {exc}")
         sys.exit(1)
 
@@ -109,7 +109,7 @@ def interactive() -> None:
                 console.print(token, end="", markup=False)
                 parts.append(token)
             console.print()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             console.print(f"\n[red]Error:[/red] {exc}")
 
         evidence = getattr(agent, "last_evidence", {})
@@ -147,5 +147,5 @@ def _log_execution(
             tools_called=["graphrag"],
             tool_responses={"graphrag": json.dumps(evidence)},
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Execution logging failed: %s", exc)

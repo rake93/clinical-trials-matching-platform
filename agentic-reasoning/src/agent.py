@@ -17,7 +17,8 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from collections.abc import Iterator
+from typing import Any, Literal
 
 import httpx
 from openai import APIError
@@ -352,7 +353,7 @@ class Agent:
         self.graphrag = GraphRAGTool(config.graphrag.model_dump())
 
     @classmethod
-    def from_config(cls, path: Path | None = None) -> "Agent":
+    def from_config(cls, path: Path | None = None) -> Agent:
         """Construct an Agent from the app.yaml agentic_reasoning section."""
         return cls(load_config(path))
 

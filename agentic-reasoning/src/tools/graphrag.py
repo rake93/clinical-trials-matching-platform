@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 from .base import BaseTool
 
@@ -39,7 +39,7 @@ class GraphRAGUnavailableError(RuntimeError):
     """Raised when a configured retrieval dependency cannot serve a request."""
 
 
-def _extract_keywords(query: str, max_keywords: int = 5) -> List[str]:
+def _extract_keywords(query: str, max_keywords: int = 5) -> list[str]:
     """Extract meaningful keywords from a natural-language query."""
     words = re.findall(r"\b[a-zA-Z][a-zA-Z0-9\-]+\b", query)
     return [w for w in words if w.lower() not in _STOP_WORDS and len(w) > 2][:max_keywords]
@@ -84,7 +84,7 @@ def _empty_outcome(code: str, message: str, action: str) -> dict[str, str]:
 class GraphRAGTool(BaseTool):
     """Hybrid retrieval over one explicitly selected clinical data target."""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         super().__init__(config)
         self._qdrant = None
         self._embedder = None
@@ -168,7 +168,7 @@ class GraphRAGTool(BaseTool):
         fetch_limit: int,
         target: dict[str, str],
         source: str | None,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
         encoded_query = self._embedder_model().encode(query)
@@ -204,7 +204,7 @@ class GraphRAGTool(BaseTool):
             limit=fetch_limit,
             query_filter=Filter(must=conditions),
         ).points
-        results: List[Dict] = []
+        results: list[dict] = []
         for hit in hits:
             payload = hit.payload or {}
             results.append(
@@ -223,11 +223,11 @@ class GraphRAGTool(BaseTool):
 
     def _graph_context(
         self,
-        keywords: List[str],
+        keywords: list[str],
         limit: int,
         target: dict[str, str],
         graph_source: str | None,
-    ) -> List[str]:
+    ) -> list[str]:
         """Return source-scoped entity relationships matching the query keywords."""
         if not keywords:
             return []
