@@ -11,7 +11,11 @@ also a space heater that occasionally outputs a JSON file
 ![Compliance: HIPAA Aligned](https://img.shields.io/badge/Compliance-HIPAA--Aligned-green)
 ---
 
-watch the [demo video](https://www.ronitsaxena.in/projects/clinical-trial-matching-api/) or read on for setup instructions, architecture overview, and troubleshooting tips.
+![Healthcare platform production UI dashboard showing clinical search interface with patient record, clinical summary results, OCR debug visualization, identified medical terms, and knowledge graph visualization with nodes and edges representing medical entities and relationships](docs_v2/assets/production_ui.png)
+
+---
+
+watch the legacy ui [demo video](https://www.ronitsaxena.in/projects/clinical-trial-matching-api/) or read on for setup instructions, architecture overview, and troubleshooting tips.
 
 ---
 
@@ -22,7 +26,7 @@ This is a **local-first, consolidated quickstart** — not the production codeba
 The production infrastructure is intentionally split across specialized repositories. Each one is optimized for a single concern and independently deployable. This monorepo exists so that anyone can run the full end-to-end system on a laptop with a single `git clone`, without configuring cloud credentials, GPU hardware, or distributed infrastructure.
 
 | This module | Origin repo | What was simplified for local |
-|---|---|---|
+| --- | --- | --- |
 | `agentic-reasoning` | [`clinical-graphrag-agents`](https://github.com/ronit22203/clinical-graphrag-agents) | Temporal durable workflows and LangGraph routing replaced by a deterministic two-phase pipeline (ADR-008) |
 | `data-ingestion` | [`ingestion-layer-graphrag`](https://github.com/ronit22203/ingestion-layer-graphrag) | AWS GPU-accelerated OCR (g4dn/T4) swapped for local Surya (MPS/CPU) |
 | `data-acquisition` | [`aws-data-acquisition`](https://github.com/ronit22203/aws-data-acquisition) | Multi-cloud S3 → Azure fallback chain still present; S3/Azure credentials optional |
@@ -47,7 +51,7 @@ make reasoning-run-query QUERY="What biomarkers predict sepsis mortality?"
 ## Architecture (4 modules)
 
 | Module | What it does |
-|--------|--------------|
+| -------- | -------------- |
 | `data-acquisition` | Fetches PDFs from medRxiv, PubMed, ClinicalTrials |
 | `data-ingestion` | OCR (Surya) → PII redaction → chunking → Qdrant + Neo4j |
 | `agentic-reasoning` | Deterministic two-phase pipeline: GraphRAG retrieval → LLM synthesis (LM Studio / SGLang / Ollama) |
@@ -58,7 +62,7 @@ make reasoning-run-query QUERY="What biomarkers predict sepsis mortality?"
 ## Services
 
 | Service | URL | Credentials |
-|---------|-----|-------------|
+| --------- | ----- | ------------- |
 | Neo4j Browser | <http://localhost:7474> | - |
 | Qdrant Dashboard | <http://localhost:6333/dashboard> | – |
 | Reasoning API | <http://localhost:8000> | – |
@@ -121,6 +125,7 @@ agent:
 `docker compose -f docker-compose.local.yml down -v && make up`
 
 **LLM backend not responding?**
+
 - LM Studio: ensure the server is running on `http://localhost:1234/v1`
 - SGLang: `SGLANG_BASE_URL=http://localhost:30000/v1` (set in `.env.local`)
 - Ollama: `ollama serve` (in a separate terminal)
