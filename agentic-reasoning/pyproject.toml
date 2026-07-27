@@ -33,6 +33,7 @@ target-version = "py312"
 select = ["E", "F", "UP", "BLE", "RUF"]
 ignore = [
     "BLE001",   # broad Exception catches are intentional in top-level CLI/server handlers
+    "E501",     # line length — existing codebase pre-dates this enforcement; fix separately
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -24,7 +24,7 @@ class ExecutionRow:
 def load_summary_jsonl(filepath: Path) -> list[dict[str, Any]]:
     """Load JSONL summary file."""
     rows = []
-    with open(filepath, 'r') as f:
+    with open(filepath) as f:
         for line in f:
             if line.strip():
                 rows.append(json.loads(line))
