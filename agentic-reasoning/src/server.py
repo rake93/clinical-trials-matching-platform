@@ -269,13 +269,13 @@ async def stats() -> JSONResponse:
         if manifest.exists():
             try:
                 return JSONResponse(json.loads(manifest.read_text()))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         report = run / "retrieval.json"
         if report.exists():
             try:
                 return JSONResponse({"run_id": run.name, **json.loads(report.read_text())})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
     return JSONResponse(None)
 
@@ -407,7 +407,7 @@ async def heatmap(query: str, chunk_index: int = 0) -> JSONResponse:
                 with_payload=True,
             )[0]
             return hits[0].payload.get("content", "") if hits else None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("heatmap fetch failed: %s", exc)
             return None
 
