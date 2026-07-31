@@ -5,6 +5,7 @@ interface NavigationProps {
   theme: "solarized" | "slate";
   onModeToggle: () => void;
   onThemeToggle: () => void;
+  onLogout: () => void;
 }
 
 function ThemeIcon({ theme }: Pick<NavigationProps, "theme">) {
@@ -24,7 +25,7 @@ function ThemeIcon({ theme }: Pick<NavigationProps, "theme">) {
   );
 }
 
-export default function Navigation({ clinicianMode, theme, onModeToggle, onThemeToggle }: NavigationProps) {
+export default function Navigation({ clinicianMode, theme, onModeToggle, onThemeToggle, onLogout }: NavigationProps) {
   return (
     <Navbar className="app-navbar">
       <NavbarGroup className="app-navbar-brand">
@@ -60,6 +61,16 @@ export default function Navigation({ clinicianMode, theme, onModeToggle, onTheme
           icon={clinicianMode ? "settings" : "pulse"}
           text={clinicianMode ? "Switch to Audit" : "Switch to Clinical"}
           onClick={onModeToggle}
+        />
+        <span className="app-navbar-divider" aria-hidden="true" />
+        <Button
+          className="app-navbar-logout"
+          minimal
+          small
+          icon="log-out"
+          text="Sign Out"
+          onClick={onLogout}
+          title="Sign out"
         />
       </NavbarGroup>
     </Navbar>

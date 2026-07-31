@@ -24,14 +24,23 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+from .auth import create_access_token, verify_password, verify_token  # noqa: E402
+from .config import _load_dotenv  # noqa: E402
+
+# Load .env.local at startup so AUTH_* vars are available before any request.
+_load_dotenv()
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
@@ -141,6 +150,41 @@ def _graphrag_to_matches(evidence: dict) -> list[dict]:
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 
+@app.post("/api/auth/login")
+async def login(form: OAuth2PasswordRequestForm = Depends()) -> JSONResponse:
+    """Issue a JWT access token for valid username/password credentials."""
+    import os
+
+    expected_user = os.environ.get("AUTH_USERNAME", "").strip()
+    expected_hash = os.environ.get("AUTH_PASSWORD_HASH", "").strip()
+
+    if not expected_user or not expected_hash:
+        logger.error("AUTH_USERNAME or AUTH_PASSWORD_HASH not configured")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "auth_not_configured",
+                "message": "Authentication is not configured on this server.",
+                "retryable": False,
+            },
+        )
+
+    if form.username != expected_user or not verify_password(form.password, expected_hash):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "invalid_credentials",
+                "message": "Incorrect username or password.",
+                "retryable": False,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = create_access_token(sub=form.username)
+    logger.info("Successful login for user=%s", form.username)
+    return JSONResponse({"access_token": token, "token_type": "bearer"})
+
+
 @app.post("/api/match")
 async def match(
     query: str = Form(...),
@@ -149,6 +193,7 @@ async def match(
     source_slug: str | None = Form(default=None),
     top_k: int = Form(default=10, ge=1, le=50),
     file: UploadFile | None = File(default=None),
+    _user: str = Depends(verify_token),
 ) -> JSONResponse:
     """Phase 1 — GraphRAG hybrid retrieval. Returns matches for the UI."""
     if target == "patient_context" and not source:
@@ -233,7 +278,7 @@ async def match(
 
 
 @app.get("/api/verify")
-async def verify(source: str, byte_start: int = 0, byte_end: int = 512) -> JSONResponse:
+async def verify(source: str, byte_start: int = 0, byte_end: int = 512, _user: str = Depends(verify_token)) -> JSONResponse:
     """Return a text snippet from a clean-artifact file by byte range."""
     # source may be a bare filename or a relative path — resolve under repo root
     candidate = _REPO_ROOT / source
@@ -253,7 +298,7 @@ async def verify(source: str, byte_start: int = 0, byte_end: int = 512) -> JSONR
 
 
 @app.get("/api/stats")
-async def stats() -> JSONResponse:
+async def stats(_user: str = Depends(verify_token)) -> JSONResponse:
     """Return latest benchmark run summary from benchmarking/results/."""
     results_dir = _REPO_ROOT / "benchmarking" / "results"
     if not results_dir.exists():
@@ -357,7 +402,7 @@ async def health() -> JSONResponse:
 
 
 @app.get("/api/pdf/{doi_path:path}")
-async def serve_pdf(doi_path: str) -> FileResponse:
+async def serve_pdf(doi_path: str, _user: str = Depends(verify_token)) -> FileResponse:
     """Stream a PDF from data/pdfs/raw/."""
     base = _REPO_ROOT / "data" / "pdfs"
     # try exact path first, then scan by filename
@@ -375,7 +420,7 @@ async def serve_pdf(doi_path: str) -> FileResponse:
 
 
 @app.get("/api/debug/heatmap")
-async def heatmap(query: str, chunk_index: int = 0) -> JSONResponse:
+async def heatmap(query: str, chunk_index: int = 0, _user: str = Depends(verify_token)) -> JSONResponse:
     """Sentence-level cosine similarity between query and a stored chunk."""
     import numpy as np
 
@@ -435,6 +480,7 @@ async def subgraph(
     entity: str,
     target: Literal["literature", "patient_context"] = "literature",
     source_slug: str | None = None,
+    _user: str = Depends(verify_token),
 ) -> JSONResponse:
     """Return 1-hop Neo4j neighbourhood for an entity (D3 force-graph format)."""
     if target == "patient_context" and not source_slug:
@@ -542,7 +588,7 @@ def _sse_event(payload: dict[str, Any]) -> str:
 
 
 @app.post("/api/synthesis")
-async def synthesis(req: SynthesisRequest) -> JSONResponse:
+async def synthesis(req: SynthesisRequest, _user: str = Depends(verify_token)) -> JSONResponse:
     """Phase 2 — LLM synthesis. Uses cached GraphRAG evidence if available."""
     agent = await _get_agent()
     loop = asyncio.get_event_loop()
@@ -590,7 +636,7 @@ async def synthesis(req: SynthesisRequest) -> JSONResponse:
 
 
 @app.post("/api/synthesis/stream")
-async def synthesis_stream(req: SynthesisStreamRequest) -> StreamingResponse:
+async def synthesis_stream(req: SynthesisStreamRequest, _user: str = Depends(verify_token)) -> StreamingResponse:
     """Stream grounded synthesis tokens for one exact cached evidence result."""
     agent = await _get_agent()
     evidence = _require_cached_evidence(req.query, req.evidenceId)

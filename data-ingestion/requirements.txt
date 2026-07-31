@@ -143,3 +143,7 @@ websockets==15.0.1
 wrapt==2.0.1
 xxhash==3.6.0
 zstandard==0.25.0
+
+# ── Auth ───────────────────────────────────────────────────────────────────
+python-jose[cryptography]>=3.3.0
+bcrypt>=4.0.0

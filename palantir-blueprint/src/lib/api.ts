@@ -11,6 +11,48 @@ const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? ""
 // Ingestion API (ingest, artifacts)
 const INGEST_BASE = (import.meta.env.VITE_INGEST_API_BASE_URL as string | undefined) ?? "";
 
+// ─── Token management ──────────────────────────────────────────
+
+const TOKEN_KEY = "clinical_auth_token";
+
+export function getToken(): string | null {
+  return sessionStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+  sessionStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** POST /api/auth/login — exchange username/password for a JWT. */
+export async function login(username: string, password: string): Promise<void> {
+  const form = new URLSearchParams();
+  form.append("username", username);
+  form.append("password", password);
+
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form.toString(),
+  });
+
+  if (!res.ok) {
+    const payload: unknown = await res.json().catch(() => null);
+    throw new ApiError(res.status, parseErrorDetail(payload, res.status));
+  }
+
+  const data = (await res.json()) as { access_token: string };
+  setToken(data.access_token);
+}
+
 // ─── Backend types — reasoning API (/api/match) ────────────────
 
 export type RetrievalTarget = "literature" | "patient_context";
@@ -169,7 +211,17 @@ function parseErrorDetail(payload: unknown, status: number): ApiErrorDetail {
 }
 
 async function fetchJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, init);
+  const headers: Record<string, string> = {
+    ...authHeaders(),
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  const res = await fetch(input, { ...init, headers });
+  if (res.status === 401) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent("auth:logout"));
+    const payload: unknown = await res.json().catch(() => null);
+    throw new ApiError(res.status, parseErrorDetail(payload, res.status));
+  }
   if (!res.ok) {
     const payload: unknown = await res.json().catch(() => null);
     throw new ApiError(res.status, parseErrorDetail(payload, res.status));
@@ -211,10 +263,14 @@ export async function fetchSynthesisStream(
 ): Promise<Response> {
   const response = await fetch(`${API_BASE}/api/synthesis/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ query, evidenceId }),
     signal,
   });
+  if (response.status === 401) {
+    clearToken();
+    window.dispatchEvent(new CustomEvent("auth:logout"));
+  }
   if (!response.ok) {
     const payload: unknown = await response.json().catch(() => null);
     throw new ApiError(response.status, parseErrorDetail(payload, response.status));
@@ -247,7 +303,7 @@ export function fetchSubgraph(
 export function startIngestStream(file: File): Promise<Response> {
   const form = new FormData();
   form.append("file", file);
-  return fetch(`${INGEST_BASE}/api/ingest`, { method: "POST", body: form });
+  return fetch(`${INGEST_BASE}/api/ingest`, { method: "POST", body: form, headers: authHeaders() });
 }
 
 /** GET /api/ingest/artifacts/chunks/{slug} — first 10 sample chunks. */

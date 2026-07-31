@@ -2,11 +2,13 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import clsx from "clsx";
 
 import Navigation from "./components/Navigation";
+import LoginPage from "./components/LoginPage";
 import LeftPane from "./components/LeftPane";
 import type { QueryHistoryItem, PatientRecord } from "./components/LeftPane";
 import QueryPane from "./components/QueryPane";
 import IngestionPane from "./components/IngestionPane";
 import type { ActiveDocumentContext } from "./lib/api";
+import { clearToken, getToken } from "./lib/api";
 
 const PANE_MIN = 160;
 const PANE_MAX = 520;
@@ -20,6 +22,7 @@ function getInitialTheme(): ThemeMode {
 }
 
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => !!getToken());
   const [clinicianMode, setClinicalMode] = useState(true);
   const [theme, setTheme]               = useState<ThemeMode>(getInitialTheme);
   const [paneWidth, setPaneWidth]       = useState(PANE_DEFAULT);
@@ -59,6 +62,12 @@ export default function App() {
   }, [dragging]);
 
   useEffect(() => {
+    function onLogout() { setIsAuthenticated(false); }
+    window.addEventListener("auth:logout", onLogout);
+    return () => window.removeEventListener("auth:logout", onLogout);
+  }, []);
+
+  useEffect(() => {
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
@@ -72,6 +81,15 @@ export default function App() {
 
   function handleSelectHistory(q: string) {
     setExternalFill(q);
+  }
+
+  function handleLogout() {
+    clearToken();
+    setIsAuthenticated(false);
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage onSuccess={() => setIsAuthenticated(true)} />;
   }
 
   return (
@@ -92,6 +110,7 @@ export default function App() {
         theme={theme}
         onModeToggle={() => setClinicalMode((v) => !v)}
         onThemeToggle={() => setTheme((current) => current === "solarized" ? "slate" : "solarized")}
+        onLogout={handleLogout}
       />
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
 

@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import AsyncIterator
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
@@ -29,6 +29,7 @@ _REPO_ROOT    = _PROJECT_ROOT.parent     # repo root
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from src.api.auth import verify_token
 from src.config_loader import load_ingestion_config  # noqa: E402
 
 # ── Directories (resolved at import time from config) ─────────────────────────
@@ -254,7 +255,7 @@ def _run_pipeline(pdf_path: Path, slug: str, queue: asyncio.Queue, loop: asyncio
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.post("/api/ingest")
-async def ingest_pdf(file: UploadFile = File(...)) -> StreamingResponse:
+async def ingest_pdf(file: UploadFile = File(...), _user: str = Depends(verify_token)) -> StreamingResponse:
     """Upload a PDF and stream 5-stage pipeline progress as SSE."""
     slug    = Path(file.filename or "upload").stem
     content = await file.read()
@@ -290,7 +291,7 @@ async def ingest_pdf(file: UploadFile = File(...)) -> StreamingResponse:
 
 
 @app.get("/api/ingest/status")
-async def ingest_status() -> JSONResponse:
+async def ingest_status(_user: str = Depends(verify_token)) -> JSONResponse:
     """List processed docs with per-stage artifact existence."""
     docs: list[dict] = []
 
@@ -336,7 +337,7 @@ async def ingest_status() -> JSONResponse:
 
 
 @app.get("/api/ingest/artifacts/ocr-viz/{slug}/{page}")
-async def ocr_viz(slug: str, page: int) -> FileResponse:
+async def ocr_viz(slug: str, page: int, _user: str = Depends(verify_token)) -> FileResponse:
     """Serve an OCR debug visualization PNG for a specific page."""
     img_path = OCR_DIR / slug / "debug_visualizations" / f"{slug}_page_{page:03d}_debug.png"
     if not img_path.exists():
@@ -345,7 +346,7 @@ async def ocr_viz(slug: str, page: int) -> FileResponse:
 
 
 @app.get("/api/ingest/artifacts/markdown/{slug}")
-async def artifact_markdown(slug: str) -> JSONResponse:
+async def artifact_markdown(slug: str, _user: str = Depends(verify_token)) -> JSONResponse:
     """Return converted markdown content (truncated preview)."""
     path = MARKDOWN_DIR / f"{slug}_converted.md"
     if not path.exists():
@@ -355,7 +356,7 @@ async def artifact_markdown(slug: str) -> JSONResponse:
 
 
 @app.get("/api/ingest/artifacts/clean/{slug}")
-async def artifact_clean(slug: str) -> JSONResponse:
+async def artifact_clean(slug: str, _user: str = Depends(verify_token)) -> JSONResponse:
     """Return cleaned markdown content (truncated preview)."""
     path = CLEANED_DIR / f"{slug}_cleaned.md"
     if not path.exists():
@@ -365,7 +366,7 @@ async def artifact_clean(slug: str) -> JSONResponse:
 
 
 @app.get("/api/ingest/artifacts/chunks/{slug}")
-async def artifact_chunks(slug: str) -> JSONResponse:
+async def artifact_chunks(slug: str, _user: str = Depends(verify_token)) -> JSONResponse:
     """Return chunk metadata and first 10 chunks."""
     path = CHUNKS_DIR / f"{slug}_chunks.json"
     if not path.exists():
@@ -381,7 +382,7 @@ async def artifact_chunks(slug: str) -> JSONResponse:
 
 
 @app.get("/api/ingest/artifacts/kg-graph/{slug}")
-async def artifact_kg_graph(slug: str) -> JSONResponse:
+async def artifact_kg_graph(slug: str, _user: str = Depends(verify_token)) -> JSONResponse:
     """Return all Neo4j triplets for this document as D3 force-graph {nodes, links}."""
     cfg = load_ingestion_config(_CONFIG_PATH)
     neo4j_cfg = cfg.get("neo4j", {})
@@ -432,7 +433,7 @@ async def artifact_kg_graph(slug: str) -> JSONResponse:
 
 
 @app.get("/api/ingest/artifacts/pdf")
-async def serve_source_pdf(source: str) -> FileResponse:
+async def serve_source_pdf(source: str, _user: str = Depends(verify_token)) -> FileResponse:
     """Serve a source PDF by name for the provenance viewer.
 
     `source` may be a bare filename (e.g. 'study.pdf') or a relative path.
