@@ -814,7 +814,7 @@ data_acquisition:
         default: true
 agentic_reasoning:
   agent:
-    model: sglang/Qwen/Qwen2.5-7B-Instruct
+    model: ollama/qwen2.5:7b
     fallback_model: lmstudio/${LLM_MODEL}
     health_check_timeout_seconds: 2
     context_window_tokens: 4096
