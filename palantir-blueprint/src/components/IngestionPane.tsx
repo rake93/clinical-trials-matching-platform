@@ -457,7 +457,7 @@ export default function IngestionPane({
       });
     } catch (err) {
       const msg = abortCtrl.signal.aborted
-        ? "Connection timed out — is the ingestion API running on :8001?"
+        ? "Connection timed out — is the ingestion API running on :8002?"
         : String(err);
       addLogLine(`[error] ${msg}`);
       setRunning(false);

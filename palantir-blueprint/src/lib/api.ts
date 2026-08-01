@@ -300,7 +300,7 @@ export function fetchSubgraph(
   );
 }
 
-// ─── Ingestion (ingestion API, :8001) ─────────────────────────
+// ─── Ingestion (ingestion API, :8002) ─────────────────────────
 
 /**
  * POST /api/ingest — upload a PDF and stream 5-stage pipeline progress as SSE.
