@@ -189,11 +189,30 @@ header "core-llm-inference (SGLang — production inference)"
 
 INFERENCE_DIR="$REPO_ROOT/core-llm-inference"
 
+# Detect CUDA driver version to pick the right sglang/torch variant.
+# sglang 0.5.x requires CUDA 13.0 (driver >= 570).
+# sglang 0.4.x (cu124) works with driver 550.x (CUDA 12.4).
+CUDA_DRIVER_MAJOR=0
+if command -v nvidia-smi &>/dev/null; then
+  _raw_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
+  CUDA_DRIVER_MAJOR=$(echo "$_raw_driver" | cut -d'.' -f1)
+fi
+
+if [[ "$CUDA_DRIVER_MAJOR" -ge 570 ]]; then
+  SGLANG_SPEC="sglang[all]"
+  TORCH_EXTRA_INDEX="--extra-index-url https://download.pytorch.org/whl/cu124"
+  FLASHINFER_URL="https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python"
+  info "Driver ${CUDA_DRIVER_MAJOR}.x detected → sglang[all] latest (CUDA 13 / torch 2.11)"
+else
+  SGLANG_SPEC="sglang[all]==0.4.6"
+  TORCH_EXTRA_INDEX="--extra-index-url https://download.pytorch.org/whl/cu124"
+  FLASHINFER_URL="https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python"
+  warn "Driver ${CUDA_DRIVER_MAJOR}.x detected (< 570) → sglang 0.4.6 cu124 (CUDA 12.4 compatible)"
+  warn "  For sglang 0.5.x, use a RunPod template with driver 570+."
+fi
+
 if [[ ! -d "$INFERENCE_DIR/.venv" ]]; then
   info "Creating core-llm-inference venv (python3.12)…"
-  # core-llm-inference/pyproject.toml requires >=3.12; use python3.12 explicitly.
-  # Large torch/sglang wheels land in PIP_CACHE_DIR (redirected to /workspace above
-  # when available) so they don't exhaust the root overlay filesystem.
   "$PYTHON312" -m venv "$INFERENCE_DIR/.venv"
 fi
 
@@ -204,23 +223,19 @@ info "Upgrading pip + installing uv into inference venv…"
 "$INFERENCE_PIP" install --quiet --upgrade pip uv
 INFERENCE_UV="$INFERENCE_DIR/.venv/bin/uv"
 
-# Install sglang[all] in a single resolver pass — sglang 0.5.x pins torch==2.11.0
-# itself, so no separate torch pre-install is needed (eliminates the download-then-
-# replace thrash). unsafe-best-match lets uv search cu124 + PyPI together to satisfy
-# the torch==2.11.0 + cu124 constraint.
-info "Installing sglang[all] + torch in one resolver pass (no thrash)…"
+info "Installing ${SGLANG_SPEC} + torch in one resolver pass…"
 "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
-  "sglang[all]" \
-  --find-links "https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python" \
-  --extra-index-url "https://download.pytorch.org/whl/cu124" \
+  "$SGLANG_SPEC" \
+  --find-links "$FLASHINFER_URL" \
+  $TORCH_EXTRA_INDEX \
   --index-strategy unsafe-best-match \
 || {
-  warn "flashinfer torch2.11 find-links failed — retrying without (sglang will use its bundled fallback)…"
+  warn "flashinfer find-links failed — retrying without (sglang will use its bundled fallback)…"
   "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
-    "sglang[all]" \
-    --extra-index-url "https://download.pytorch.org/whl/cu124" \
+    "$SGLANG_SPEC" \
+    $TORCH_EXTRA_INDEX \
     --index-strategy unsafe-best-match \
-  || fail "sglang[all] install failed — check CUDA / Python version alignment"
+  || fail "sglang install failed — check CUDA / Python version alignment"
 }
 
 info "Installing core-llm-inference (editable)…"
