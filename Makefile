@@ -174,8 +174,8 @@ down: ## Stop Neo4j + Qdrant (Docker if available, else shell/stop_services.sh)
 serve: ## Start the reasoning agent in interactive CLI mode
 	@$(MAKE) --no-print-directory reasoning-run
 
-dev-kill: ## Kill any stale processes on :8000, :8001, :5173
-	@for port in 8000 8001 5173; do \
+dev-kill: ## Kill any stale processes on :8000, :8002, :5173
+	@for port in 8000 8002 5173; do \
 	  pids=$$(lsof -ti tcp:$$port 2>/dev/null); \
 	  if [ -n "$$pids" ]; then \
 	    printf "$(YELLOW)Killing stale process(es) on :$$port → PID $$pids$(NC)\n"; \
@@ -183,15 +183,15 @@ dev-kill: ## Kill any stale processes on :8000, :8001, :5173
 	  fi; \
 	done; sleep 0.5
 
-dev: dev-kill ## ★ Start all services: reasoning API (:8000), ingestion API (:8001), blueprint UI (:5173)
+dev: dev-kill ## ★ Start all services: reasoning API (:8000), ingestion API (:8002), blueprint UI (:5173)
 	@printf "$(BOLD)$(GREEN)Starting all services…$(NC)\n"
 	@printf "  Reasoning API  → $(CYAN)http://localhost:8000$(NC)\n"
-	@printf "  Ingestion API  → $(CYAN)http://localhost:8001$(NC)\n"
+	@printf "  Ingestion API  → $(CYAN)http://localhost:8002$(NC)\n"
 	@printf "  Blueprint UI   → $(CYAN)http://localhost:5173$(NC)\n\n"
 	@printf "  Press $(BOLD)Ctrl+C$(NC) to stop all services.\n\n"
 	@trap 'kill 0' INT TERM; \
 	 (cd $(REASONING_DIR) && $(REASONING_PYTHON) -m uvicorn src.server:app --port 8000 --reload 2>&1 | sed 's/^/[reasoning] /') & \
-	 (cd $(INGESTION_DIR) && $(INGESTION_PYTHON) -m uvicorn src.api.server:app --port 8001 --reload 2>&1 | sed 's/^/[ingestion] /') & \
+	 (cd $(INGESTION_DIR) && $(INGESTION_PYTHON) -m uvicorn src.api.server:app --port 8002 --reload 2>&1 | sed 's/^/[ingestion] /') & \
 	 (cd $(BLUEPRINT_DIR) && npm run dev 2>&1 | sed 's/^/[blueprint] /') & \
 	 wait
 
@@ -629,8 +629,8 @@ ingestion-install: ## Create data-ingestion venv (python3.11) and install depend
 		$(PIP_TMPDIR_EXPORT) .venv/bin/pip install --upgrade pip && \
 		$(PIP_TMPDIR_EXPORT) .venv/bin/pip install $(PIP_CACHE_FLAGS) -r requirements.txt
 
-ingestion-api: ## Start ingestion pipeline API server on :8001
-	@cd $(INGESTION_DIR) && $(INGESTION_PYTHON) -m uvicorn src.api.server:app --port 8001 --reload
+ingestion-api: ## Start ingestion pipeline API server on :8002
+	@cd $(INGESTION_DIR) && $(INGESTION_PYTHON) -m uvicorn src.api.server:app --port 8002 --reload
 
 ingestion-test: ## Run all ingestion tests
 	@cd $(INGESTION_DIR) && $(INGESTION_PYTHON) -m pytest tests/ -v

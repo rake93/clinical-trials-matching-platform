@@ -9,7 +9,7 @@ import react from "@vitejs/plugin-react";
 // Order matters — the more specific /api/ingest rule must come first.
 const apiProxy = {
   "/api/ingest": {
-    target: "http://localhost:8001",
+    target: "http://localhost:8002",
     changeOrigin: true,
   },
   "/api": {
