@@ -206,20 +206,20 @@ INFERENCE_UV="$INFERENCE_DIR/.venv/bin/uv"
 # Pin torch==2.11.0 with cu124 wheels BEFORE sglang so pip never downloads
 # a newer torch only to immediately replace it (saved ~41 min on prior runs).
 info "Pinning torch==2.11.0 cu124 wheels (prevents sglang-forced reinstall)…"
-"$INFERENCE_UV" pip install "torch==2.11.0" \
+"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" "torch==2.11.0" \
   --extra-index-url https://download.pytorch.org/whl/cu124
 
 # SGLang with FlashInfer pre-built AOT kernels for cu124 / torch 2.11 / Python 3.12.
 # --only-binary=:all: prevents silent fallback to 30-45 min CUDA source compilation.
 info "Installing sglang[all] with pre-built flashinfer cu124 wheels…"
-"$INFERENCE_UV" pip install "sglang[all]" \
+"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" "sglang[all]" \
   --find-links https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python \
   --extra-index-url https://download.pytorch.org/whl/cu124 \
   --only-binary=:all: \
   || fail "sglang[all]: no compatible pre-built binary found. Check Python/CUDA/torch version alignment."
 
 info "Installing core-llm-inference (editable)…"
-"$INFERENCE_UV" pip install -e "$INFERENCE_DIR"
+"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" -e "$INFERENCE_DIR"
 ok "core-llm-inference venv ready → $INFERENCE_DIR/.venv"
 
 # Smoke-test: verify SGLang is importable
@@ -277,7 +277,7 @@ info "Upgrading pip + installing uv into ingestion venv…"
 INGESTION_UV="$INGESTION_DIR/.venv/bin/uv"
 
 info "Installing requirements via uv (torch, surya-ocr, sentence-transformers, etc.)…"
-"$INGESTION_UV" pip install -r "$INGESTION_DIR/requirements.txt"
+"$INGESTION_UV" pip install --python "$INGESTION_PYTHON" -r "$INGESTION_DIR/requirements.txt"
 ok "data-ingestion dependencies installed"
 
 if "$INGESTION_PYTHON" -c "import spacy; spacy.load('en_core_web_lg')" >/dev/null 2>&1; then
