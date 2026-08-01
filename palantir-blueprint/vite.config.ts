@@ -11,10 +11,29 @@ const apiProxy = {
   "/api/ingest": {
     target: "http://localhost:8002",
     changeOrigin: true,
+    // Forward all request headers (including Authorization / X-Auth-Token)
+    // and disable buffering so SSE streams pass through immediately.
+    configure: (proxy: any) => {
+      proxy.on("proxyReq", (proxyReq: any, req: any) => {
+        // Explicitly copy auth headers in case the proxy drops them
+        const auth = req.headers["authorization"];
+        const xauth = req.headers["x-auth-token"];
+        if (auth) proxyReq.setHeader("Authorization", auth);
+        if (xauth) proxyReq.setHeader("X-Auth-Token", xauth);
+      });
+    },
   },
   "/api": {
     target: "http://localhost:8000",
     changeOrigin: true,
+    configure: (proxy: any) => {
+      proxy.on("proxyReq", (proxyReq: any, req: any) => {
+        const auth = req.headers["authorization"];
+        const xauth = req.headers["x-auth-token"];
+        if (auth) proxyReq.setHeader("Authorization", auth);
+        if (xauth) proxyReq.setHeader("X-Auth-Token", xauth);
+      });
+    },
   },
 };
 
