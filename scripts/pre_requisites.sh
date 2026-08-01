@@ -203,20 +203,24 @@ info "Upgrading pip + installing uv into inference venv…"
 "$INFERENCE_PIP" install --quiet --upgrade pip uv
 INFERENCE_UV="$INFERENCE_DIR/.venv/bin/uv"
 
-# Pin torch==2.11.0 with cu124 wheels BEFORE sglang so pip never downloads
-# a newer torch only to immediately replace it (saved ~41 min on prior runs).
-info "Pinning torch==2.11.0 cu124 wheels (prevents sglang-forced reinstall)…"
-"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" "torch==2.11.0" \
-  --extra-index-url https://download.pytorch.org/whl/cu124
-
-# SGLang with FlashInfer pre-built AOT kernels for cu124 / torch 2.11 / Python 3.12.
-# --only-binary=:all: prevents silent fallback to 30-45 min CUDA source compilation.
-info "Installing sglang[all] with pre-built flashinfer cu124 wheels…"
-"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" "sglang[all]" \
-  --find-links https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python \
-  --extra-index-url https://download.pytorch.org/whl/cu124 \
-  --only-binary=:all: \
-  || fail "sglang[all]: no compatible pre-built binary found. Check Python/CUDA/torch version alignment."
+# Install sglang[all] in a single resolver pass — sglang 0.5.x pins torch==2.11.0
+# itself, so no separate torch pre-install is needed (eliminates the download-then-
+# replace thrash). unsafe-best-match lets uv search cu124 + PyPI together to satisfy
+# the torch==2.11.0 + cu124 constraint.
+info "Installing sglang[all] + torch in one resolver pass (no thrash)…"
+"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
+  "sglang[all]" \
+  --find-links "https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python" \
+  --extra-index-url "https://download.pytorch.org/whl/cu124" \
+  --index-strategy unsafe-best-match \
+|| {
+  warn "flashinfer torch2.11 find-links failed — retrying without (sglang will use its bundled fallback)…"
+  "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
+    "sglang[all]" \
+    --extra-index-url "https://download.pytorch.org/whl/cu124" \
+    --index-strategy unsafe-best-match \
+  || fail "sglang[all] install failed — check CUDA / Python version alignment"
+}
 
 info "Installing core-llm-inference (editable)…"
 "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" -e "$INFERENCE_DIR"
