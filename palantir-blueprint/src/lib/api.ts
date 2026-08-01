@@ -29,7 +29,9 @@ export function clearToken(): void {
 
 function authHeaders(): Record<string, string> {
   const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  if (!token) return {};
+  // RunPod nginx strips Authorization header — also send as X-Auth-Token
+  return { Authorization: `Bearer ${token}`, "X-Auth-Token": token };
 }
 
 /** POST /api/auth/login — exchange username/password for a JWT. */
