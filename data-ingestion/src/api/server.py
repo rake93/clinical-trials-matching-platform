@@ -32,6 +32,26 @@ if str(_PROJECT_ROOT) not in sys.path:
 from src.api.auth import verify_token
 from src.config_loader import load_ingestion_config  # noqa: E402
 
+# ── Load .env.local so AUTH_JWT_SECRET is available before first request ──────
+def _load_dotenv() -> None:
+    """Load .env.local from repo root into os.environ (without overwriting set vars)."""
+    import os
+    env_path = _REPO_ROOT / ".env.local"
+    if not env_path.exists():
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = val
+
+_load_dotenv()
+
 # ── Directories (resolved at import time from config) ─────────────────────────
 _CONFIG_PATH  = _REPO_ROOT / "config" / "app.yaml"
 _CONFIG       = load_ingestion_config(_CONFIG_PATH)
