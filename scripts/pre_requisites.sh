@@ -190,22 +190,22 @@ header "core-llm-inference (SGLang — production inference)"
 INFERENCE_DIR="$REPO_ROOT/core-llm-inference"
 
 # Detect CUDA driver version to pick the right sglang/torch variant.
-# sglang 0.5.x requires CUDA 13.0 (driver >= 570).
-# sglang 0.4.x (cu124) works with driver 550.x (CUDA 12.4).
+# sglang 0.5.x requires CUDA 13.0 (driver >= 575).
+# driver 570.x = CUDA 12.8, driver 550.x = CUDA 12.4 — both insufficient.
 CUDA_DRIVER_MAJOR=0
 if command -v nvidia-smi &>/dev/null; then
   _raw_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
   CUDA_DRIVER_MAJOR=$(echo "$_raw_driver" | cut -d'.' -f1)
 fi
 
-if [[ "$CUDA_DRIVER_MAJOR" -ge 570 ]]; then
+if [[ "$CUDA_DRIVER_MAJOR" -ge 575 ]]; then
   SGLANG_SPEC="sglang[all]"
   TORCH_EXTRA_INDEX="--extra-index-url https://download.pytorch.org/whl/cu124"
   FLASHINFER_URL="https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python"
   info "Driver ${CUDA_DRIVER_MAJOR}.x detected → sglang[all] latest (CUDA 13 / torch 2.11)"
 else
-  warn "Driver ${CUDA_DRIVER_MAJOR}.x detected — CUDA 13.0 requires driver >= 570."
-  warn "  sglang will be skipped. To enable inference, use a RunPod template with driver 570+."
+  warn "Driver ${CUDA_DRIVER_MAJOR}.x detected — CUDA 13.0 requires driver >= 575."
+  warn "  sglang will be skipped. To enable inference, use a RunPod template with driver 575+."
   warn "  The platform still runs; reasoning server falls back to LM Studio / OpenAI."
   SGLANG_SPEC=""
 fi
