@@ -1,0 +1,153 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dockerfile.runpod
+#
+# Pre-baked RunPod image for the Healthcare Platform.
+# Bakes ALL Python venvs and system deps into the image so pod startup is
+# ~30 seconds (git clone + pip install -e . on pre-populated site-packages)
+# instead of ~45 minutes.
+#
+# Build & push:
+#   docker build -f Dockerfile.runpod -t <your-registry>/healthcare-platform:latest .
+#   docker push <your-registry>/healthcare-platform:latest
+#
+# Use as a RunPod custom template — set the container image to the pushed tag.
+# Set the start command to: bash /start.sh
+# ─────────────────────────────────────────────────────────────────────────────
+
+FROM nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_LINK_MODE=copy \
+    UV_INDEX_STRATEGY=unsafe-best-match
+
+# ── 1. System packages ────────────────────────────────────────────────────────
+RUN apt-get update -qq && apt-get install -y -qq \
+    apt-utils curl wget git git-lfs jq ca-certificates gnupg lsb-release \
+    build-essential software-properties-common pkg-config \
+    libssl-dev libffi-dev zlib1g-dev libbz2-dev libreadline-dev \
+    libsqlite3-dev libncursesw5-dev xz-utils libxml2-dev libxmlsec1-dev liblzma-dev \
+    python3-dev python3-venv python3-pip \
+    python3.11 python3.11-venv python3.11-dev \
+    poppler-utils tesseract-ocr libmagic-dev libgomp1 \
+    openjdk-21-jdk zstd unzip zip netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── 2. Python 3.12 ───────────────────────────────────────────────────────────
+RUN rm -f /etc/apt/sources.list.d/*deadsnakes* /etc/apt/trusted.gpg.d/deadsnakes* && \
+    install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+      | gpg --dearmor -o /etc/apt/keyrings/deadsnakes.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu $(lsb_release -cs) main" \
+      > /etc/apt/sources.list.d/deadsnakes-ppa.list && \
+    apt-get update -qq && \
+    apt-get install -y -qq python3.12 python3.12-venv python3.12-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── 3. Node.js 20 ────────────────────────────────────────────────────────────
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y -qq nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# ── 4. uv ─────────────────────────────────────────────────────────────────────
+RUN pip install uv --quiet
+
+# ── 5. Qdrant static binary ───────────────────────────────────────────────────
+RUN QDRANT_VER="$(curl -s https://api.github.com/repos/qdrant/qdrant/releases/latest \
+      | grep '"tag_name"' | cut -d'"' -f4)" && \
+    curl -fsSL \
+      "https://github.com/qdrant/qdrant/releases/download/${QDRANT_VER}/qdrant-x86_64-unknown-linux-musl.tar.gz" \
+      | tar xz -C /usr/local/bin/ qdrant && \
+    chmod +x /usr/local/bin/qdrant
+
+# ── 6. Neo4j 5 ───────────────────────────────────────────────────────────────
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key \
+      | gpg --dearmor -o /etc/apt/keyrings/neotechnology.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/neotechnology.gpg] https://debian.neo4j.com stable 5" \
+      > /etc/apt/sources.list.d/neo4j.list && \
+    apt-get update -qq && \
+    apt-get install -y -qq neo4j && \
+    rm -rf /var/lib/apt/lists/* && \
+    neo4j-admin dbms set-initial-password testpassword 2>/dev/null || true
+
+# ── 7. Pre-bake Python venvs ─────────────────────────────────────────────────
+# Clone the repo temporarily to resolve deps, then remove the code.
+# Venvs land in /opt/venvs/* and are symlinked into the workspace at runtime.
+# At pod start, `pip install -e .` is instant since all wheels are already there.
+
+ARG REPO_URL=https://github.com/ronit22203/clinical-trials-matching-platform.git
+ARG REPO_BRANCH=main
+
+RUN git clone --depth 1 --branch ${REPO_BRANCH} ${REPO_URL} /tmp/repo && \
+    cd /tmp/repo && \
+    git submodule update --init --force --recursive
+
+# core-llm-inference (sglang + torch — heaviest layer, cache separately)
+RUN python3.12 -m venv /opt/venvs/core-llm-inference && \
+    /opt/venvs/core-llm-inference/bin/pip install --quiet --upgrade pip uv && \
+    /opt/venvs/core-llm-inference/bin/uv pip install \
+      --python /opt/venvs/core-llm-inference/bin/python \
+      "sglang[all]" \
+      --find-links "https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python" \
+      --extra-index-url "https://download.pytorch.org/whl/cu124" \
+      --index-strategy unsafe-best-match \
+    || /opt/venvs/core-llm-inference/bin/uv pip install \
+      --python /opt/venvs/core-llm-inference/bin/python \
+      "sglang[all]" \
+      --extra-index-url "https://download.pytorch.org/whl/cu124" \
+      --index-strategy unsafe-best-match
+
+# agentic-reasoning — install deps from pyproject.toml without editable install
+# (editable install happens at pod runtime in entrypoint.sh in ~2 seconds)
+RUN python3.12 -m venv /opt/venvs/agentic-reasoning && \
+    /opt/venvs/agentic-reasoning/bin/pip install --quiet --upgrade pip uv && \
+    /opt/venvs/agentic-reasoning/bin/uv pip install \
+      --python /opt/venvs/agentic-reasoning/bin/python \
+      --extra-index-url "https://download.pytorch.org/whl/cu124" \
+      --index-strategy unsafe-best-match \
+      "click>=8.3.1" "fastapi>=0.110.0" "uvicorn[standard]>=0.27.0" \
+      "python-multipart>=0.0.9" "langchain>=1.2.10" "langchain-ollama>=1.0.1" \
+      "langchain-openai>=0.3.0" "numpy>=1.24.0" "pydantic>=2.12.5" \
+      "pyyaml>=6.0.3" "rich>=14.3.2" "cachetools>=5.3.0" \
+      "qdrant-client>=1.9.0" "neo4j>=5.0.0" "sentence-transformers>=3.0.0" \
+      "python-jose[cryptography]>=3.3.0" "bcrypt>=4.0.0"
+
+# data-acquisition
+RUN python3.12 -m venv /opt/venvs/data-acquisition && \
+    /opt/venvs/data-acquisition/bin/pip install --quiet --upgrade pip uv && \
+    /opt/venvs/data-acquisition/bin/uv pip install \
+      --python /opt/venvs/data-acquisition/bin/python \
+      --index-strategy unsafe-best-match \
+      -e /tmp/repo/data-acquisition
+
+# data-ingestion (python3.11)
+RUN python3.11 -m venv /opt/venvs/data-ingestion && \
+    /opt/venvs/data-ingestion/bin/pip install --quiet --upgrade pip uv && \
+    /opt/venvs/data-ingestion/bin/uv pip install \
+      --python /opt/venvs/data-ingestion/bin/python \
+      --extra-index-url "https://download.pytorch.org/whl/cu124" \
+      --index-strategy unsafe-best-match \
+      -r /tmp/repo/data-ingestion/requirements.txt && \
+    /opt/venvs/data-ingestion/bin/python -m spacy download en_core_web_lg
+
+# palantir-blueprint npm deps
+RUN cd /tmp/repo/palantir-blueprint && \
+    npm ci --legacy-peer-deps && \
+    npm run build && \
+    cp -r node_modules /opt/blueprint-node-modules && \
+    cp -r dist /opt/blueprint-dist
+
+# Clean up the temp clone (code is fetched fresh at runtime)
+RUN rm -rf /tmp/repo
+
+# ── 8. Runtime entrypoint ─────────────────────────────────────────────────────
+COPY docker/entrypoint.sh /start.sh
+RUN chmod +x /start.sh
+
+EXPOSE 5173 8000 8001 30000
+
+WORKDIR /workspace
+CMD ["/start.sh"]
