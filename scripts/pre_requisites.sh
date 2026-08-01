@@ -54,6 +54,8 @@ info "Updating apt cache…"
 apt-get update -qq
 
 APT_PKGS=(
+  # suppress debconf / package-config warnings on minimal images
+  apt-utils
   # core tools
   curl wget git jq ca-certificates gnupg lsb-release netcat-openbsd
   # build tools
@@ -76,7 +78,31 @@ info "Installing system packages…"
 apt-get install -y -qq "${APT_PKGS[@]}"
 ok "System packages installed"
 
-# ── 2. Python 3.12 (deadsnakes PPA) ──────────────────────────────────────────
+# ── 2. Git Submodules ─────────────────────────────────────────────────────────
+header "Git Submodules"
+
+# A shallow/partial clone leaves empty mount dirs that git refuses to clone into.
+# Force-remove any submodule dirs that exist but are missing pyproject.toml so
+# `git submodule update --init --force` can repopulate them cleanly.
+while IFS= read -r sub_path; do
+  full_path="$REPO_ROOT/$sub_path"
+  if [[ -d "$full_path" && ! -f "$full_path/pyproject.toml" && ! -f "$full_path/setup.py" ]]; then
+    warn "Stale/empty submodule dir: $sub_path — removing before init"
+    rm -rf "${full_path:?}"
+  fi
+done < <(git -C "$REPO_ROOT" submodule foreach --quiet --recursive 'echo $displaypath' 2>/dev/null || true)
+
+git -C "$REPO_ROOT" submodule update --init --force --recursive
+ok "Submodules initialised"
+
+# ── 3. uv — fast parallel wheel installer ────────────────────────────────────
+header "uv (parallel wheel installer)"
+
+if ! command -v uv >/dev/null 2>&1; then
+  info "Installing uv…"
+  pip install uv --quiet
+fi
+ok "uv $(uv --version)"
 header "Python 3.12"
 
 if command -v python3.12 >/dev/null 2>&1; then
@@ -173,24 +199,27 @@ fi
 INFERENCE_PIP="$INFERENCE_DIR/.venv/bin/pip"
 INFERENCE_PYTHON="$INFERENCE_DIR/.venv/bin/python"
 
-info "Upgrading pip…"
-"$INFERENCE_PIP" install --quiet --upgrade pip
+info "Upgrading pip + installing uv into inference venv…"
+"$INFERENCE_PIP" install --quiet --upgrade pip uv
+INFERENCE_UV="$INFERENCE_DIR/.venv/bin/uv"
 
-info "Installing torch with CUDA 12.4 wheels… (large download — see PIP_CACHE_DIR=${PIP_CACHE_DIR:-~/.cache/pip})"
-"$INFERENCE_PIP" install torch \
+# Pin torch==2.11.0 with cu124 wheels BEFORE sglang so pip never downloads
+# a newer torch only to immediately replace it (saved ~41 min on prior runs).
+info "Pinning torch==2.11.0 cu124 wheels (prevents sglang-forced reinstall)…"
+"$INFERENCE_UV" pip install "torch==2.11.0" \
   --extra-index-url https://download.pytorch.org/whl/cu124
 
-# SGLang with FlashInfer pre-built AOT kernels for cu124 / torch 2.4 / Python 3.12.
+# SGLang with FlashInfer pre-built AOT kernels for cu124 / torch 2.11 / Python 3.12.
 # --only-binary=:all: prevents silent fallback to 30-45 min CUDA source compilation.
 info "Installing sglang[all] with pre-built flashinfer cu124 wheels…"
-"$INFERENCE_PIP" install "sglang[all]" \
-  --find-links https://flashinfer.ai/whl/cu124/torch2.4/flashinfer-python \
+"$INFERENCE_UV" pip install "sglang[all]" \
+  --find-links https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python \
   --extra-index-url https://download.pytorch.org/whl/cu124 \
   --only-binary=:all: \
   || fail "sglang[all]: no compatible pre-built binary found. Check Python/CUDA/torch version alignment."
 
-info "Installing core-llm-inference…"
-"$INFERENCE_PIP" install --quiet -e "$INFERENCE_DIR"
+info "Installing core-llm-inference (editable)…"
+"$INFERENCE_UV" pip install -e "$INFERENCE_DIR"
 ok "core-llm-inference venv ready → $INFERENCE_DIR/.venv"
 
 # Smoke-test: verify SGLang is importable
@@ -243,11 +272,12 @@ fi
 INGESTION_PIP="$INGESTION_DIR/.venv/bin/pip"
 INGESTION_PYTHON="$INGESTION_DIR/.venv/bin/python"
 
-info "Upgrading pip…"
-"$INGESTION_PIP" install --quiet --upgrade pip
+info "Upgrading pip + installing uv into ingestion venv…"
+"$INGESTION_PIP" install --quiet --upgrade pip uv
+INGESTION_UV="$INGESTION_DIR/.venv/bin/uv"
 
-info "Installing requirements (torch, surya-ocr, sentence-transformers, etc.) — ~5 min… (cache → ${PIP_CACHE_DIR:-~/.cache/pip})"
-"$INGESTION_PIP" install -r "$INGESTION_DIR/requirements.txt"
+info "Installing requirements via uv (torch, surya-ocr, sentence-transformers, etc.)…"
+"$INGESTION_UV" pip install -r "$INGESTION_DIR/requirements.txt"
 ok "data-ingestion dependencies installed"
 
 if "$INGESTION_PYTHON" -c "import spacy; spacy.load('en_core_web_lg')" >/dev/null 2>&1; then
