@@ -21,9 +21,14 @@ const apiProxy = {
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: "0.0.0.0",   // bind to all interfaces so RunPod proxy can reach it
+    host: "0.0.0.0",
     port: 5173,
     proxy: apiProxy,
+    hmr: {
+      // RunPod proxy terminates TLS — HMR websocket must use the public host
+      // without a port suffix (proxy handles the port mapping).
+      clientPort: 443,
+    },
   },
   preview: {
     host: "0.0.0.0",
