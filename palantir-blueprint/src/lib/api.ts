@@ -21,10 +21,15 @@ export function getToken(): string | null {
 
 export function setToken(token: string): void {
   sessionStorage.setItem(TOKEN_KEY, token);
+  // Also persist as a cookie so it survives reverse-proxy header stripping.
+  // SameSite=Strict + Path=/ scopes it to this origin only.
+  document.cookie = `auth_token=${token}; SameSite=Strict; Path=/`;
 }
 
 export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
+  // Expire the cookie immediately.
+  document.cookie = "auth_token=; SameSite=Strict; Path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
 }
 
 function authHeaders(): Record<string, string> {

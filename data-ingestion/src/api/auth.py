@@ -49,6 +49,9 @@ def verify_token(
     if not token:
         token = request.headers.get("X-Auth-Token")
     if not token:
+        # Final fallback: cookie (survives RunPod/Cloudflare header stripping)
+        token = request.cookies.get("auth_token")
+    if not token:
         raise HTTPException(
             status_code=401,
             detail={"code": "missing_token", "message": "Authentication required.", "retryable": False},
