@@ -204,11 +204,10 @@ if [[ "$CUDA_DRIVER_MAJOR" -ge 570 ]]; then
   FLASHINFER_URL="https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python"
   info "Driver ${CUDA_DRIVER_MAJOR}.x detected → sglang[all] latest (CUDA 13 / torch 2.11)"
 else
-  SGLANG_SPEC="sglang[all]==0.4.6"
-  TORCH_EXTRA_INDEX="--extra-index-url https://download.pytorch.org/whl/cu124"
-  FLASHINFER_URL="https://flashinfer.ai/whl/cu124/torch2.5/flashinfer-python"
-  warn "Driver ${CUDA_DRIVER_MAJOR}.x detected (< 570) → sglang 0.4.6 cu124 (CUDA 12.4 compatible)"
-  warn "  For sglang 0.5.x, use a RunPod template with driver 570+."
+  warn "Driver ${CUDA_DRIVER_MAJOR}.x detected — CUDA 13.0 requires driver >= 570."
+  warn "  sglang will be skipped. To enable inference, use a RunPod template with driver 570+."
+  warn "  The platform still runs; reasoning server falls back to LM Studio / OpenAI."
+  SGLANG_SPEC=""
 fi
 
 if [[ ! -d "$INFERENCE_DIR/.venv" ]]; then
@@ -223,29 +222,31 @@ info "Upgrading pip + installing uv into inference venv…"
 "$INFERENCE_PIP" install --quiet --upgrade pip uv
 INFERENCE_UV="$INFERENCE_DIR/.venv/bin/uv"
 
-info "Installing ${SGLANG_SPEC} + torch in one resolver pass…"
-"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
-  "$SGLANG_SPEC" \
-  --find-links "$FLASHINFER_URL" \
-  $TORCH_EXTRA_INDEX \
-  --index-strategy unsafe-best-match \
-|| {
-  warn "flashinfer find-links failed — retrying without (sglang will use its bundled fallback)…"
+if [[ -n "$SGLANG_SPEC" ]]; then
+  info "Installing ${SGLANG_SPEC} + torch in one resolver pass…"
   "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
     "$SGLANG_SPEC" \
+    --find-links "$FLASHINFER_URL" \
     $TORCH_EXTRA_INDEX \
     --index-strategy unsafe-best-match \
-  || fail "sglang install failed — check CUDA / Python version alignment"
-}
+  || {
+    warn "flashinfer find-links failed — retrying without (sglang will use its bundled fallback)…"
+    "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
+      "$SGLANG_SPEC" \
+      $TORCH_EXTRA_INDEX \
+      --index-strategy unsafe-best-match \
+    || fail "sglang install failed — check CUDA / Python version alignment"
+  }
+fi
 
 info "Installing core-llm-inference (editable)…"
 "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" -e "$INFERENCE_DIR"
 ok "core-llm-inference venv ready → $INFERENCE_DIR/.venv"
 
 # Smoke-test: verify SGLang is importable
-if "$INFERENCE_PYTHON" -c "import sglang" 2>/dev/null; then
+if [[ -n "$SGLANG_SPEC" ]] && "$INFERENCE_PYTHON" -c "import sglang" 2>/dev/null; then
   ok "SGLang import verified"
-else
+elif [[ -n "$SGLANG_SPEC" ]]; then
   warn "SGLang not importable — re-run: cd $INFERENCE_DIR && .venv/bin/pip install 'sglang[all]'"
 fi
 
