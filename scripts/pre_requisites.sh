@@ -29,9 +29,10 @@ cd "$REPO_ROOT"
 # on RunPod / Colab pods where root overlay is ≤20 GB but /workspace is large).
 if [[ -d /workspace ]]; then
   export PIP_CACHE_DIR=/workspace/pip-cache
+  export UV_CACHE_DIR=/workspace/uv-cache
   export TMPDIR=/workspace/pip-tmp
-  mkdir -p "$PIP_CACHE_DIR" "$TMPDIR"
-  info "Pip cache + tmp redirected → /workspace (root-fs protection)"
+  mkdir -p "$PIP_CACHE_DIR" "$UV_CACHE_DIR" "$TMPDIR"
+  info "Pip + uv cache + tmp redirected → /workspace (root-fs protection)"
 fi
 
 echo -e "\n${BOLD}Healthcare Platform — Production Prerequisites Installer${NC}"
