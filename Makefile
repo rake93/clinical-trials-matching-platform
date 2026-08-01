@@ -126,22 +126,22 @@ status: ## Show running containers and data artifact counts
 bootstrap: ## Bootstrap Python and Node dependencies
 	@./scripts/bootstrap.sh
 
-validate: ## Check synthesis primary/fallback, Qdrant, and Neo4j connectivity
+validate: ## Check Ollama, Qdrant, and Neo4j connectivity
 	@bash -c 'set -euo pipefail; \
 		test -f .env.local || { printf "$(RED)FAIL: missing .env.local$(NC)\n"; exit 1; }; \
 		set -a; source .env.local; set +a; \
-		SGLANG_URL="$${SGLANG_BASE_URL:-http://localhost:30000/v1}"; \
+		OLLAMA_URL="$${OLLAMA_BASE_URL:-http://localhost:11434}"; \
 		LM_STUDIO_URL="$${LM_STUDIO_BASE_URL:-http://localhost:1234/v1}"; \
 		QDRANT_ADDR="$${QDRANT_URL:-http://localhost:6333}"; \
 		NEO4J_BOLT="$${NEO4J_URI:-bolt://localhost:7687}"; \
-		printf "Checking SGLang primary at $$SGLANG_URL\n"; \
-		if curl --fail --silent "$$SGLANG_URL/models" >/dev/null; then \
-			printf "  $(GREEN)SGLang primary OK$(NC)\n"; \
+		printf "Checking Ollama at $$OLLAMA_URL\n"; \
+		if curl --fail --silent "$$OLLAMA_URL/api/tags" >/dev/null; then \
+			printf "  $(GREEN)Ollama OK$(NC)\n"; \
 		else \
-			printf "  $(YELLOW)SGLang primary unavailable; checking LM Studio fallback at $$LM_STUDIO_URL$(NC)\n"; \
+			printf "  $(YELLOW)Ollama unavailable; checking LM Studio fallback at $$LM_STUDIO_URL$(NC)\n"; \
 			curl --fail --silent "$$LM_STUDIO_URL/models" >/dev/null \
 				&& printf "  $(GREEN)LM Studio fallback OK$(NC)\n" \
-				|| { printf "  $(RED)FAIL: neither SGLang nor LM Studio is reachable$(NC)\n"; exit 1; }; \
+				|| { printf "  $(RED)FAIL: neither Ollama nor LM Studio is reachable$(NC)\n  Run: ollama serve &\n"; exit 1; }; \
 		fi; \
 		printf "Checking Qdrant at $$QDRANT_ADDR\n"; \
 		curl --fail --silent "$$QDRANT_ADDR/collections" >/dev/null \

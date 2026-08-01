@@ -333,7 +333,44 @@ else
   warn "torch.cuda.is_available() = False — check container GPU flags (--gpus all)."
 fi
 
-# ── 10. Data Directories ──────────────────────────────────────────────────────
+# ── 10. Ollama (LLM inference — driver-agnostic) ─────────────────────────────
+header "Ollama (LLM inference)"
+
+if command -v ollama &>/dev/null; then
+  ok "ollama already installed: $(ollama --version 2>/dev/null | head -1)"
+else
+  info "Installing Ollama…"
+  curl -fsSL https://ollama.com/install.sh | sh
+  ok "Ollama installed"
+fi
+
+# Pull Qwen2.5-7B if not already cached
+if ollama list 2>/dev/null | grep -q "qwen2.5:7b"; then
+  ok "qwen2.5:7b already pulled"
+else
+  info "Pulling qwen2.5:7b (~4.7 GB, uses GPU automatically)…"
+  ollama serve >/tmp/ollama_pull.log 2>&1 &
+  OLLAMA_PID=$!
+  sleep 4
+  ollama pull qwen2.5:7b \
+    || warn "Model pull failed — run 'ollama pull qwen2.5:7b' manually after starting ollama serve"
+  kill "$OLLAMA_PID" 2>/dev/null || true
+  ok "qwen2.5:7b ready"
+fi
+
+# ── 11. palantir-blueprint node_modules ──────────────────────────────────────
+header "palantir-blueprint (npm)"
+
+BLUEPRINT_DIR="$REPO_ROOT/palantir-blueprint"
+if [[ -d "$BLUEPRINT_DIR/node_modules" ]]; then
+  ok "node_modules already present"
+else
+  info "Running npm ci…"
+  (cd "$BLUEPRINT_DIR" && npm ci --legacy-peer-deps)
+  ok "node_modules installed"
+fi
+
+# ── 12. Data Directories ──────────────────────────────────────────────────────
 header "Data Directories"
 
 for d in \
@@ -368,18 +405,19 @@ echo -e "  ${BOLD}Next steps:${NC}\n"
 echo -e "  1. ${CYAN}Start Neo4j + Qdrant:${NC}"
 echo -e "       make up"
 echo ""
-echo -e "  2. ${CYAN}Start SGLang inference server:${NC}"
-echo -e "       core-llm-inference/.venv/bin/core-llm-inference serve \\"
-echo -e "         --model Qwen/Qwen2.5-7B-Instruct --detach"
+echo -e "  2. ${CYAN}Start Ollama inference server:${NC}"
+echo -e "       ollama serve &"
 echo ""
-echo -e "  3. ${CYAN}Verify services:${NC}"
+echo -e "  3. ${CYAN}Start all platform services:${NC}"
+echo -e "       make dev"
+echo ""
+echo -e "  4. ${CYAN}Verify services:${NC}"
 echo -e "       make validate"
-echo -e "       core-llm-inference/.venv/bin/core-llm-inference status"
 echo ""
-echo -e "  4. ${CYAN}Fetch + ingest data:${NC}"
+echo -e "  5. ${CYAN}Fetch + ingest data:${NC}"
 echo -e "       make acquisition-fetch SOURCE=medrxiv MAX_PDFS=10"
 echo -e "       make ingestion-run N=10"
 echo ""
-echo -e "  5. ${CYAN}Run the agent:${NC}"
+echo -e "  6. ${CYAN}Run the agent:${NC}"
 echo -e "       make reasoning-run-query QUERY=\"your question here\""
 echo ""
