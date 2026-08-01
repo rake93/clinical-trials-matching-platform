@@ -241,9 +241,15 @@ if [[ ! -d "$REASONING_DIR/.venv" ]]; then
   info "Creating venv…"
   "$PYTHON312" -m venv "$REASONING_DIR/.venv"
 fi
-info "Installing dependencies…"
-"$REASONING_DIR/.venv/bin/pip" install --quiet --upgrade pip
-"$REASONING_DIR/.venv/bin/pip" install --quiet -e "$REASONING_DIR"
+REASONING_PIP="$REASONING_DIR/.venv/bin/pip"
+REASONING_PYTHON="$REASONING_DIR/.venv/bin/python"
+info "Installing uv + dependencies…"
+"$REASONING_PIP" install --quiet --upgrade pip uv
+REASONING_UV="$REASONING_DIR/.venv/bin/uv"
+"$REASONING_UV" pip install --python "$REASONING_PYTHON" \
+  --extra-index-url "https://download.pytorch.org/whl/cu124" \
+  --index-strategy unsafe-best-match \
+  -e "$REASONING_DIR"
 ok "agentic-reasoning venv ready"
 
 # ── 8. Python: data-acquisition ──────────────────────────────────────────────
@@ -254,10 +260,17 @@ if [[ ! -d "$ACQUISITION_DIR/.venv" ]]; then
   info "Creating venv…"
   "$PYTHON312" -m venv "$ACQUISITION_DIR/.venv"
 fi
-info "Installing dependencies…"
-"$ACQUISITION_DIR/.venv/bin/pip" install --quiet --upgrade pip
-"$ACQUISITION_DIR/.venv/bin/pip" install --quiet -e "$ACQUISITION_DIR"
-"$ACQUISITION_DIR/.venv/bin/pip" install --quiet -e "$ACQUISITION_DIR[cloud]" \
+ACQUISITION_PIP="$ACQUISITION_DIR/.venv/bin/pip"
+ACQUISITION_PYTHON="$ACQUISITION_DIR/.venv/bin/python"
+info "Installing uv + dependencies…"
+"$ACQUISITION_PIP" install --quiet --upgrade pip uv
+ACQUISITION_UV="$ACQUISITION_DIR/.venv/bin/uv"
+"$ACQUISITION_UV" pip install --python "$ACQUISITION_PYTHON" \
+  --index-strategy unsafe-best-match \
+  -e "$ACQUISITION_DIR"
+"$ACQUISITION_UV" pip install --python "$ACQUISITION_PYTHON" \
+  --index-strategy unsafe-best-match \
+  -e "$ACQUISITION_DIR[cloud]" \
   || warn "Cloud extras (boto3/azure) skipped — install manually if needed."
 ok "data-acquisition venv ready"
 
@@ -281,7 +294,10 @@ info "Upgrading pip + installing uv into ingestion venv…"
 INGESTION_UV="$INGESTION_DIR/.venv/bin/uv"
 
 info "Installing requirements via uv (torch, surya-ocr, sentence-transformers, etc.)…"
-"$INGESTION_UV" pip install --python "$INGESTION_PYTHON" -r "$INGESTION_DIR/requirements.txt"
+"$INGESTION_UV" pip install --python "$INGESTION_PYTHON" \
+  --extra-index-url "https://download.pytorch.org/whl/cu124" \
+  --index-strategy unsafe-best-match \
+  -r "$INGESTION_DIR/requirements.txt"
 ok "data-ingestion dependencies installed"
 
 if "$INGESTION_PYTHON" -c "import spacy; spacy.load('en_core_web_lg')" >/dev/null 2>&1; then
