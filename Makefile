@@ -175,13 +175,18 @@ serve: ## Start the reasoning agent in interactive CLI mode
 	@$(MAKE) --no-print-directory reasoning-run
 
 dev-kill: ## Kill any stale processes on :8000, :8002, :5173
+	@# Use fuser on Linux (reliable); fall back to lsof on macOS.
 	@for port in 8000 8002 5173; do \
-	  pids=$$(lsof -ti tcp:$$port 2>/dev/null); \
+	  if command -v fuser >/dev/null 2>&1; then \
+	    pids=$$(fuser $$port/tcp 2>/dev/null | tr -s ' ' '\n' | grep -v '^$$'); \
+	  else \
+	    pids=$$(lsof -ti tcp:$$port 2>/dev/null); \
+	  fi; \
 	  if [ -n "$$pids" ]; then \
 	    printf "$(YELLOW)Killing stale process(es) on :$$port → PID $$pids$(NC)\n"; \
 	    kill -9 $$pids 2>/dev/null || true; \
 	  fi; \
-	done; sleep 0.5
+	done; sleep 1
 
 dev: dev-kill ## ★ Start all services: reasoning API (:8000), ingestion API (:8002), blueprint UI (:5173)
 	@printf "$(BOLD)$(GREEN)Starting all services…$(NC)\n"
