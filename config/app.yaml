@@ -79,8 +79,8 @@ data_ingestion:
     database: neo4j
   knowledge_graph:
     enabled: true
-    model: Qwen/Qwen2.5-7B-Instruct
-    chat_url: ${SGLANG_BASE_URL}/chat/completions
+    model: qwen2.5:7b
+    chat_url: ${OLLAMA_BASE_URL}/v1/chat/completions
     fallback_model: ${LLM_MODEL}
     fallback_chat_url: ${LM_STUDIO_BASE_URL}/chat/completions
     health_timeout_seconds: 2

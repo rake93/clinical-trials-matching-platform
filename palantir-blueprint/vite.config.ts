@@ -11,6 +11,10 @@ const apiProxy = {
   "/api/ingest": {
     target: "http://localhost:8002",
     changeOrigin: true,
+    // Ingestion is a long-running SSE stream (OCR + embed + KG can take 60-120s).
+    // Default http-proxy timeout is 30s — raise it to avoid premature disconnects.
+    proxyTimeout: 180000,
+    timeout: 180000,
     // Forward all request headers (including Authorization / X-Auth-Token)
     // and disable buffering so SSE streams pass through immediately.
     configure: (proxy: any) => {
