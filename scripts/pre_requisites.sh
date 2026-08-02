@@ -8,7 +8,7 @@
 #   - Python 3.12 via deadsnakes PPA (Python 3.11 via apt for data-ingestion)
 #   - Neo4j 5 via official neo4j apt repo (no Docker needed)
 #   - Qdrant via static binary from GitHub releases (no Docker needed)
-#   - SGLang inference via core-llm-inference (replaces LM Studio / Ollama)
+#   - Ollama for LLM inference (driver-agnostic; replaces SGLang / LM Studio)
 #   - Docker is optional — Qdrant + Neo4j run natively if daemon unavailable
 
 set -euo pipefail
@@ -184,73 +184,7 @@ if [[ -f "$NEO4J_CONF" ]] && ! grep -q 'UseContainerSupport' "$NEO4J_CONF"; then
 fi
 ok "Neo4j configured (user: neo4j / testpassword)"
 
-# ── 6. core-llm-inference (SGLang inference server) ──────────────────────────
-header "core-llm-inference (SGLang — production inference)"
-
-INFERENCE_DIR="$REPO_ROOT/core-llm-inference"
-
-# Detect CUDA driver version to pick the right sglang/torch variant.
-# sglang 0.5.x requires CUDA 13.0 (driver >= 575).
-# driver 570.x = CUDA 12.8, driver 550.x = CUDA 12.4 — both insufficient.
-CUDA_DRIVER_MAJOR=0
-if command -v nvidia-smi &>/dev/null; then
-  _raw_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d '[:space:]')
-  CUDA_DRIVER_MAJOR=$(echo "$_raw_driver" | cut -d'.' -f1)
-fi
-
-if [[ "$CUDA_DRIVER_MAJOR" -ge 575 ]]; then
-  SGLANG_SPEC="sglang[all]"
-  TORCH_EXTRA_INDEX="--extra-index-url https://download.pytorch.org/whl/cu124"
-  FLASHINFER_URL="https://flashinfer.ai/whl/cu124/torch2.11/flashinfer-python"
-  info "Driver ${CUDA_DRIVER_MAJOR}.x detected → sglang[all] latest (CUDA 13 / torch 2.11)"
-else
-  warn "Driver ${CUDA_DRIVER_MAJOR}.x detected — CUDA 13.0 requires driver >= 575."
-  warn "  sglang will be skipped. To enable inference, use a RunPod template with driver 575+."
-  warn "  The platform still runs; reasoning server falls back to LM Studio / OpenAI."
-  SGLANG_SPEC=""
-fi
-
-if [[ ! -d "$INFERENCE_DIR/.venv" ]]; then
-  info "Creating core-llm-inference venv (python3.12)…"
-  "$PYTHON312" -m venv "$INFERENCE_DIR/.venv"
-fi
-
-INFERENCE_PIP="$INFERENCE_DIR/.venv/bin/pip"
-INFERENCE_PYTHON="$INFERENCE_DIR/.venv/bin/python"
-
-info "Upgrading pip + installing uv into inference venv…"
-"$INFERENCE_PIP" install --quiet --upgrade pip uv
-INFERENCE_UV="$INFERENCE_DIR/.venv/bin/uv"
-
-if [[ -n "$SGLANG_SPEC" ]]; then
-  info "Installing ${SGLANG_SPEC} + torch in one resolver pass…"
-  "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
-    "$SGLANG_SPEC" \
-    --find-links "$FLASHINFER_URL" \
-    $TORCH_EXTRA_INDEX \
-    --index-strategy unsafe-best-match \
-  || {
-    warn "flashinfer find-links failed — retrying without (sglang will use its bundled fallback)…"
-    "$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" \
-      "$SGLANG_SPEC" \
-      $TORCH_EXTRA_INDEX \
-      --index-strategy unsafe-best-match \
-    || fail "sglang install failed — check CUDA / Python version alignment"
-  }
-fi
-
-info "Installing core-llm-inference (editable)…"
-"$INFERENCE_UV" pip install --python "$INFERENCE_PYTHON" -e "$INFERENCE_DIR"
-ok "core-llm-inference venv ready → $INFERENCE_DIR/.venv"
-
-# Smoke-test: verify SGLang is importable
-if [[ -n "$SGLANG_SPEC" ]] && "$INFERENCE_PYTHON" -c "import sglang" 2>/dev/null; then
-  ok "SGLang import verified"
-elif [[ -n "$SGLANG_SPEC" ]]; then
-  warn "SGLang not importable — re-run: cd $INFERENCE_DIR && .venv/bin/pip install 'sglang[all]'"
-fi
-
-# ── 7. Python: agentic-reasoning ─────────────────────────────────────────────
+# ── 6. Python: agentic-reasoning ─────────────────────────────────────────────
 header "Python: agentic-reasoning (.venv, python3.12, editable)"
 
 REASONING_DIR="$REPO_ROOT/agentic-reasoning"
@@ -269,7 +203,7 @@ REASONING_UV="$REASONING_DIR/.venv/bin/uv"
   -e "$REASONING_DIR"
 ok "agentic-reasoning venv ready"
 
-# ── 8. Python: data-acquisition ──────────────────────────────────────────────
+# ── 7. Python: data-acquisition ──────────────────────────────────────────────
 header "Python: data-acquisition (.venv, python3.12, editable)"
 
 ACQUISITION_DIR="$REPO_ROOT/data-acquisition"
@@ -291,7 +225,7 @@ ACQUISITION_UV="$ACQUISITION_DIR/.venv/bin/uv"
   || warn "Cloud extras (boto3/azure) skipped — install manually if needed."
 ok "data-acquisition venv ready"
 
-# ── 9. Python: data-ingestion (CUDA-aware torch) ─────────────────────────────
+# ── 8. Python: data-ingestion (CUDA-aware torch) ─────────────────────────────
 header "Python: data-ingestion (python3.11 venv, CUDA-aware torch)"
 
 INGESTION_DIR="$REPO_ROOT/data-ingestion"
@@ -333,7 +267,7 @@ else
   warn "torch.cuda.is_available() = False — check container GPU flags (--gpus all)."
 fi
 
-# ── 10. Ollama (LLM inference — driver-agnostic) ─────────────────────────────
+# ── 9. Ollama (LLM inference — driver-agnostic) ───────────────────────────────
 header "Ollama (LLM inference)"
 
 if command -v ollama &>/dev/null; then
@@ -358,7 +292,7 @@ else
   ok "qwen2.5:7b ready"
 fi
 
-# ── 11. palantir-blueprint node_modules ──────────────────────────────────────
+# ── 10. palantir-blueprint node_modules ──────────────────────────────────────
 header "palantir-blueprint (npm)"
 
 BLUEPRINT_DIR="$REPO_ROOT/palantir-blueprint"
@@ -370,7 +304,7 @@ else
   ok "node_modules installed"
 fi
 
-# ── 12. Data Directories ──────────────────────────────────────────────────────
+# ── 11. Data Directories ──────────────────────────────────────────────────────
 header "Data Directories"
 
 for d in \
@@ -386,7 +320,7 @@ for d in \
 done
 ok "data/ subdirectory tree ready"
 
-# ── 11. .env.local ────────────────────────────────────────────────────────────
+# ── 12. .env.local ────────────────────────────────────────────────────────────
 header ".env.local"
 
 if [[ -f "$REPO_ROOT/.env.local" ]]; then
@@ -394,7 +328,7 @@ if [[ -f "$REPO_ROOT/.env.local" ]]; then
 else
   cp "$REPO_ROOT/.env.local.example" "$REPO_ROOT/.env.local"
   ok "Created .env.local from .env.local.example"
-  warn "SGLANG_BASE_URL defaults to http://localhost:30000/v1 — no changes needed for single-machine setup."
+  warn "OLLAMA_BASE_URL defaults to http://localhost:11434 — no changes needed for single-machine setup."
 fi
 
 # ── 12. Summary ───────────────────────────────────────────────────────────────
