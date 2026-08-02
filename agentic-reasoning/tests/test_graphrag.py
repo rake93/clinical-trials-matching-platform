@@ -5,6 +5,7 @@ Qdrant, Neo4j, and SentenceTransformer are mocked so tests run offline.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -91,6 +92,26 @@ class TestExtractKeywords:
 class TestGraphRAGToolExecute:
     def _make_tool(self, config: dict | None = None) -> GraphRAGTool:
         return GraphRAGTool(config or BASE_CONFIG)
+
+    def test_model_cache_dir_is_repo_relative(self):
+        tool = self._make_tool()
+
+        cache_dir = Path(tool._model_cache_dir())
+
+        assert cache_dir.is_absolute()
+        assert cache_dir.parts[-2:] == ("data", "models")
+
+    def test_warmup_loads_embedding_and_reranker(self):
+        tool = self._make_tool({**BASE_CONFIG, "reranker_model": "test-reranker"})
+
+        with (
+            patch.object(tool, "_embedder_model") as embedder,
+            patch.object(tool, "_reranker_model") as reranker,
+        ):
+            tool.warmup()
+
+        embedder.assert_called_once_with()
+        reranker.assert_called_once_with()
 
     def test_returns_found_true_on_vector_hits(self):
         tool = self._make_tool()

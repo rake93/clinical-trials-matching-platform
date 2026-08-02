@@ -15,6 +15,7 @@ from .base import BaseTool
 
 logger = logging.getLogger(__name__)
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _STOP_WORDS = {
     "what", "are", "the", "is", "a", "an", "of", "for", "in", "on", "at",
     "to", "and", "or", "with", "by", "from", "tell", "me", "about", "list",
@@ -105,14 +106,19 @@ class GraphRAGTool(BaseTool):
             self._qdrant = QdrantClient(self.config["qdrant_url"])
         return self._qdrant
 
+    def _model_cache_dir(self) -> str:
+        configured = Path(self.config.get("model_cache_dir", "data/models")).expanduser()
+        cache_dir = configured if configured.is_absolute() else _REPO_ROOT / configured
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return str(cache_dir)
+
     def _embedder_model(self):
         if self._embedder is None:
             from sentence_transformers import SentenceTransformer
 
-            cache_dir = self.config.get("model_cache_dir", "data/models")
             self._embedder = SentenceTransformer(
                 self.config["embedding_model"],
-                cache_folder=cache_dir,
+                cache_folder=self._model_cache_dir(),
             )
         return self._embedder
 
@@ -133,10 +139,21 @@ class GraphRAGTool(BaseTool):
         if self._reranker is None:
             from sentence_transformers import CrossEncoder
 
-            cache_dir = self.config.get("model_cache_dir", "data/models")
             logger.info("Loading reranker: %s", model_name)
-            self._reranker = CrossEncoder(model_name, cache_folder=cache_dir)
+            self._reranker = CrossEncoder(
+                model_name,
+                cache_folder=self._model_cache_dir(),
+            )
         return self._reranker
+
+    def warmup(self) -> None:
+        """Load retrieval models before the first user query."""
+        logger.info("Pre-warming GraphRAG embedding model")
+        self._embedder_model()
+        if self.config.get("reranker_model"):
+            logger.info("Pre-warming GraphRAG reranker")
+            self._reranker_model()
+        logger.info("GraphRAG retrieval models ready")
 
     def _target_config(self, target_name: str) -> dict[str, str]:
         configured = self.config.get("retrieval_targets")

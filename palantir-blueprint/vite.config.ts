@@ -30,6 +30,9 @@ const apiProxy = {
   "/api": {
     target: "http://localhost:8000",
     changeOrigin: true,
+    // First retrieval can still be slower if a user queries before login warm-up finishes.
+    proxyTimeout: 180000,
+    timeout: 180000,
     configure: (proxy: any) => {
       proxy.on("proxyReq", (proxyReq: any, req: any) => {
         const auth = req.headers["authorization"];

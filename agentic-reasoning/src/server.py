@@ -56,6 +56,7 @@ app.add_middleware(
 
 _agent: Any = None
 _agent_init_lock = asyncio.Lock()
+_agent_warmup_task: asyncio.Task[Any] | None = None
 
 
 async def _get_agent() -> Any:
@@ -66,10 +67,33 @@ async def _get_agent() -> Any:
                 from .agent import Agent
 
                 loop = asyncio.get_event_loop()
-                logger.info("Initialising Agent (first request)…")
-                _agent = await loop.run_in_executor(None, Agent.from_config)
-                logger.info("Agent ready.")
+                logger.info("Initialising Agent and retrieval models…")
+                agent = await loop.run_in_executor(None, Agent.from_config)
+                await loop.run_in_executor(None, agent.graphrag.warmup)
+                _agent = agent
+                logger.info("Agent and retrieval models ready.")
     return _agent
+
+
+def _start_agent_warmup() -> None:
+    """Start one background warm-up after login so queries avoid cold starts."""
+    global _agent_warmup_task
+    if _agent is not None:
+        return
+    if _agent_warmup_task is not None and not _agent_warmup_task.done():
+        return
+
+    _agent_warmup_task = asyncio.create_task(_get_agent())
+
+    def _consume_result(task: asyncio.Task[Any]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.info("Agent warm-up cancelled")
+        except Exception:
+            logger.exception("Agent warm-up failed; the next query will retry")
+
+    _agent_warmup_task.add_done_callback(_consume_result)
 
 
 # ── Evidence cache: opaque IDs prevent cross-context synthesis reuse ──────────
@@ -182,6 +206,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends()) -> JSONResponse:
 
     token = create_access_token(sub=form.username)
     logger.info("Successful login for user=%s", form.username)
+    _start_agent_warmup()
     return JSONResponse({"access_token": token, "token_type": "bearer"})
 
 
