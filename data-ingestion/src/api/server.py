@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import AsyncIterator
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -66,17 +68,6 @@ CHUNKS_DIR    = _REPO_ROOT / _OUTPUT.get("chunks_dir",   "data/artifacts/chunk")
 for _d in (UPLOAD_DIR, OCR_DIR, MARKDOWN_DIR, CLEANED_DIR, CHUNKS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# ── FastAPI app ────────────────────────────────────────────────────────────────
-app = FastAPI(title="Ingestion Pipeline API", version="0.1.0", lifespan=lifespan)
-app.add_middleware(
-from contextlib import asynccontextmanager
-
-    CORSMiddleware,
-    allow_origins=["*"],      # local-only; tighten in production
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 log = logging.getLogger("ingestion_api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
@@ -94,8 +85,8 @@ def _warmup_models() -> None:
     global _WARM_PREDICTORS
     try:
         from src.extractors.pdf_marker_v2 import initialize_models
-        cfg     = load_ingestion_config(_CONFIG_PATH)
-        device  = cfg.get("ocr", {}).get("device", "cpu")
+        cfg    = load_ingestion_config(_CONFIG_PATH)
+        device = cfg.get("ocr", {}).get("device", "cpu")
         log.info("Pre-warming Surya OCR models on device=%s …", device)
         _WARM_PREDICTORS = initialize_models(device=device)
         log.info("Surya OCR models ready (device=%s)", device)
@@ -104,13 +95,21 @@ def _warmup_models() -> None:
 
 
 @asynccontextmanager
-async def lifespan(app_: object):
-    """Warm-up heavy models in background on startup; nothing to teardown."""
-    import asyncio as _aio
-    loop = _aio.get_event_loop()
+async def lifespan(_app: object):  # type: ignore[type-arg]
+    """Warm-up heavy models in a background thread on startup."""
+    loop = asyncio.get_event_loop()
     loop.run_in_executor(None, _warmup_models)
     yield
 
+
+# ── FastAPI app ────────────────────────────────────────────────────────────────
+app = FastAPI(title="Ingestion Pipeline API", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],      # local-only; tighten in production
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ── SSE helpers ───────────────────────────────────────────────────────────────
 
