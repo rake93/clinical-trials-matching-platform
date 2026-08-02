@@ -67,8 +67,10 @@ for _d in (UPLOAD_DIR, OCR_DIR, MARKDOWN_DIR, CLEANED_DIR, CHUNKS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
-app = FastAPI(title="Ingestion Pipeline API", version="0.1.0")
+app = FastAPI(title="Ingestion Pipeline API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
+from contextlib import asynccontextmanager
+
     CORSMiddleware,
     allow_origins=["*"],      # local-only; tighten in production
     allow_methods=["*"],
@@ -78,12 +80,46 @@ app.add_middleware(
 log = logging.getLogger("ingestion_api")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
+# ── Model warm-up cache (populated at startup, reused per request) ─────────────
+_WARM_PREDICTORS: dict | None = None
+
+
+def _warmup_models() -> None:
+    """Pre-load Surya OCR models into _WARM_PREDICTORS at server startup.
+
+    Runs in a thread so it doesn't block the event loop. On a cold CUDA pod
+    this takes ~60-90 s; subsequent requests reuse the cached predictors and
+    start OCR immediately.
+    """
+    global _WARM_PREDICTORS
+    try:
+        from src.extractors.pdf_marker_v2 import initialize_models
+        cfg     = load_ingestion_config(_CONFIG_PATH)
+        device  = cfg.get("ocr", {}).get("device", "cpu")
+        log.info("Pre-warming Surya OCR models on device=%s …", device)
+        _WARM_PREDICTORS = initialize_models(device=device)
+        log.info("Surya OCR models ready (device=%s)", device)
+    except Exception:
+        log.exception("Model warm-up failed — models will load on first request")
+
+
+@asynccontextmanager
+async def lifespan(app_: object):
+    """Warm-up heavy models in background on startup; nothing to teardown."""
+    import asyncio as _aio
+    loop = _aio.get_event_loop()
+    loop.run_in_executor(None, _warmup_models)
+    yield
+
 
 # ── SSE helpers ───────────────────────────────────────────────────────────────
 
 def _sse_line(event: dict) -> bytes:
     """Encode a dict as a single SSE data line."""
     return f"data: {json.dumps(event)}\n\n".encode()
+
+
+_SSE_KEEPALIVE = b": keepalive\n\n"
 
 
 # ── Pipeline runner (runs in thread executor) ─────────────────────────────────
@@ -117,7 +153,7 @@ def _run_pipeline(pdf_path: Path, slug: str, queue: asyncio.Queue, loop: asyncio
         # ── Stage 1: PDF → OCR JSON ───────────────────────────────────────────
         emit("ocr", "running", "Loading Surya OCR models…")
         device = ocr_cfg.get("device", "mps")
-        predictors = initialize_models(device=device)
+        predictors = _WARM_PREDICTORS if _WARM_PREDICTORS is not None else initialize_models(device=device)
 
         emit("ocr", "running", "Rendering PDF pages…")
         images = load_pdf_images(str(pdf_path))
@@ -291,10 +327,14 @@ async def ingest_pdf(file: UploadFile = File(...), _user: str = Depends(verify_t
 
     async def event_stream() -> AsyncIterator[bytes]:
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                # Send a keepalive comment every 5 s so nginx/proxy never
+                # closes the connection during heavy model loading.
+                yield _SSE_KEEPALIVE
+                continue
             yield _sse_line(event)
-            # Only close on the terminal pipeline-level sentinels emitted as
-            # emit("done", ...) or emit("error", ...) — NOT on per-stage "done" status.
             if event.get("stage") in ("done", "error"):
                 yield b": end\n\n"
                 break

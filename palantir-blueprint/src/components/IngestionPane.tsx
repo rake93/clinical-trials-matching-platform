@@ -444,9 +444,9 @@ export default function IngestionPane({
     setRawOcrText("");
     setSteps(INITIAL_STEPS.map((s) => ({ ...s, progress: 0, status: "idle" as StepStatus })));
 
-    // 30 s connection timeout — prevents the UI hanging silently if the API is not up
+    // 180 s connection timeout — covers cold CUDA model-load (~90 s on first request)
     const abortCtrl = new AbortController();
-    const connectTimeout = setTimeout(() => abortCtrl.abort(), 30_000);
+    const connectTimeout = setTimeout(() => abortCtrl.abort(), 180_000);
 
     let response: Response;
     try {
@@ -457,7 +457,7 @@ export default function IngestionPane({
       });
     } catch (err) {
       const msg = abortCtrl.signal.aborted
-        ? "Connection timed out — is the ingestion API running on :8002?"
+        ? "Connection timed out — models may still be loading, try again in ~30 s"
         : String(err);
       addLogLine(`[error] ${msg}`);
       setRunning(false);
