@@ -232,6 +232,9 @@ class GraphRAGTool(BaseTool):
                     "chunk_id": payload.get("chunk_id"),
                     "chunk_index": payload.get("chunk_index"),
                     "context": payload.get("context"),
+                    "page_number": payload.get("page_number"),
+                    "char_start": payload.get("char_start"),
+                    "char_end": payload.get("char_end"),
                     "scope": payload.get("scope", target["scope"]),
                     "collection": collection,
                 }

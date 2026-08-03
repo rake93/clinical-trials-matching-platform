@@ -2,7 +2,6 @@
 
 import type {
   BackendMatch,
-  BackendMatchEvidence,
   BackendSubgraphNode,
   BackendSubgraphLink,
   BackendChunk,
@@ -97,18 +96,19 @@ function circularLayout(count: number, index: number): { x: number; y: number } 
 
 // ─── Result adapter (BackendMatch from /api/match) ─────────────
 
-function adaptEvidence(ev: BackendMatchEvidence, score: number): ProvenanceSource {
+function adaptMatchProvenance(match: BackendMatch): ProvenanceSource {
+  const hasOffsets = typeof match.charStart === "number" && typeof match.charEnd === "number";
   return {
-    source: ev.source,
-    byteRange: `${ev.byteStart}–${ev.byteEnd}`,
-    page: "N/A",
-    conf: score,
+    source: match.source,
+    byteRange: hasOffsets ? `${match.charStart}–${match.charEnd}` : "N/A",
+    page: String(match.pageNumber ?? 1),
+    conf: match.score,
     preText: "",
     spans: [
       {
         highlight: {
-          text: `${ev.head} ${ev.relation} ${ev.tail}`,
-          conf: score,
+          text: match.content,
+          conf: match.score,
         },
         after: "",
       },
@@ -138,9 +138,7 @@ export function adaptResult(match: BackendMatch, index: number): TrialResult {
     source: match.source,
     location: match.source,
     snippet: match.content,
-    provenances: match.evidence.length > 0
-      ? match.evidence.map((e) => adaptEvidence(e, match.score))
-      : [],
+    provenances: [adaptMatchProvenance(match)],
   };
 }
 

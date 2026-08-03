@@ -95,6 +95,9 @@ export interface BackendMatch {
   source: string;
   content: string;
   context: string;
+  pageNumber?: number | null;
+  charStart?: number | null;
+  charEnd?: number | null;
   evidence: BackendMatchEvidence[];
 }
 

@@ -13,7 +13,7 @@ import {
   Pre,
   Tag,
 } from "@blueprintjs/core";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -61,11 +61,62 @@ function confHighlightStyle(conf: number): React.CSSProperties {
 
 // ─── Sub-components ───────────────────────────────────────────
 
-/** Inline PDF page viewer with optional page navigation. */
-function PdfViewer({ url, page }: { url: string; page: number }) {
+function escapeHtml(text: string): string {
+  return text.replace(
+    /[&<>"']/g,
+    (character) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "\"": "&quot;",
+      "'": "&#039;",
+    })[character] ?? character,
+  );
+}
+
+function normalizePdfText(text: string): string {
+  return text
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function meaningfulTokens(text: string): string[] {
+  return normalizePdfText(text)
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 4);
+}
+
+/** Inline PDF page viewer with matched text-layer highlighting. */
+function PdfViewer({ url, page, highlightText }: { url: string; page: number; highlightText: string }) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [currentPage, setPage] = useState(page);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const normalizedHighlight = useMemo(
+    () => normalizePdfText(highlightText.replace(/^Context:[^\n]*\n+/i, "")),
+    [highlightText],
+  );
+  const highlightTokens = useMemo(
+    () => new Set(meaningfulTokens(normalizedHighlight)),
+    [normalizedHighlight],
+  );
+
+  function renderPdfText({ str }: { str: string }): string {
+    const escaped = escapeHtml(str);
+    if (currentPage !== page) return escaped;
+
+    const normalizedItem = normalizePdfText(str);
+    const itemTokens = meaningfulTokens(normalizedItem);
+    const matchedTokens = itemTokens.filter((token) => highlightTokens.has(token)).length;
+    const tokenMatch = itemTokens.length >= 2 && matchedTokens / itemTokens.length >= 0.7;
+    const exactMatch = normalizedItem.length >= 8 && normalizedHighlight.includes(normalizedItem);
+    if (!exactMatch && !tokenMatch) {
+      return escaped;
+    }
+    return `<mark class="pdf-chunk-highlight">${escaped}</mark>`;
+  }
+
   return (
     <div className="pdf-viewer-container">
       {loadError ? (
@@ -83,6 +134,7 @@ function PdfViewer({ url, page }: { url: string; page: number }) {
               width={380}
               renderTextLayer
               renderAnnotationLayer={false}
+              customTextRenderer={renderPdfText}
             />
           </Document>
           {numPages && numPages > 1 && (
@@ -168,7 +220,13 @@ function ProvenanceChunk({ prov, clinicianMode }: { prov: ProvenanceSource; clin
           style={{ marginLeft: "auto", fontFamily: "var(--text-mono)", fontSize: 10 }}
         />
       </div>
-      {showPdf && <PdfViewer url={getPdfSourceUrl(prov.source)} page={pageNum} />}
+      {showPdf && (
+        <PdfViewer
+          url={getPdfSourceUrl(prov.source)}
+          page={pageNum}
+          highlightText={prov.spans.map((span) => span.highlight.text).join("\n")}
+        />
+      )}
     </div>
   );
 }

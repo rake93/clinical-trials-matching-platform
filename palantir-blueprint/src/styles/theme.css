@@ -850,6 +850,13 @@ kbd.search-shortcut {
   height: auto !important;
 }
 
+.pdf-viewer-container .react-pdf__Page__textContent .pdf-chunk-highlight {
+  background: rgba(255, 190, 46, 0.58);
+  border-bottom: 1px solid rgba(255, 159, 10, 0.95);
+  border-radius: 1px;
+  color: transparent;
+}
+
 .pdf-preview-card {
   display: flex;
   flex-direction: column;

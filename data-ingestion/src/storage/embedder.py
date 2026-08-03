@@ -222,6 +222,8 @@ class MedicalVectorizer:
                         "level": chunk.get("level", 0),
                         "chunk_index": chunk_index,
                         "page_number": chunk.get("page_number", 1),
+                        "char_start": chunk.get("char_start"),
+                        "char_end": chunk.get("char_end"),
                     },
                 )
             )

@@ -165,6 +165,9 @@ def _graphrag_to_matches(evidence: dict) -> list[dict]:
                 "source": source,
                 "content": hit.get("content", ""),
                 "context": hit.get("context") or "",
+                "pageNumber": hit.get("page_number"),
+                "charStart": hit.get("char_start"),
+                "charEnd": hit.get("char_end"),
                 "evidence": evidence_entries,
             }
         )

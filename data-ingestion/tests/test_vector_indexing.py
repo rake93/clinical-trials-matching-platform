@@ -85,6 +85,8 @@ def test_index_chunks_path_replaces_only_matching_scoped_document(
                 "context": "Assessment",
                 "level": 2,
                 "page_number": 3,
+                "char_start": 120,
+                "char_end": 141,
             },
             {
                 "content": "Footer",
@@ -142,6 +144,8 @@ def test_index_chunks_path_replaces_only_matching_scoped_document(
         "level": 2,
         "chunk_index": 0,
         "page_number": 3,
+        "char_start": 120,
+        "char_end": 141,
     }
 
 

@@ -123,6 +123,9 @@ class TestGraphRAGToolExecute:
                 "chunk_id": "c1",
                 "chunk_index": 0,
                 "context": None,
+                "page_number": 3,
+                "char_start": 120,
+                "char_end": 145,
             }
         ]
         with patch.object(tool, "_vector_search", return_value=mock_vector_results), \
@@ -132,6 +135,9 @@ class TestGraphRAGToolExecute:
         assert result["found"] is True
         assert len(result["vector_results"]) == 1
         assert result["vector_results"][0]["content"] == "Metformin reduces HbA1c."
+        assert result["vector_results"][0]["page_number"] == 3
+        assert result["vector_results"][0]["char_start"] == 120
+        assert result["vector_results"][0]["char_end"] == 145
 
     def test_returns_found_false_on_empty_results(self):
         tool = self._make_tool()

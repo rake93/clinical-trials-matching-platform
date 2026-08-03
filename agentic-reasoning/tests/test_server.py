@@ -28,6 +28,9 @@ EVIDENCE: dict[str, Any] = {
             "source": "paper.pdf",
             "chunk_index": 2,
             "context": "Guideline",
+            "page_number": 4,
+            "char_start": 320,
+            "char_end": 337,
         }
     ],
     "graph_facts": ["DRUG --[TREATS]--> CONDITION"],
@@ -66,6 +69,9 @@ def test_match_uses_vector_relevance_not_raw_reranker_score(
     payload = response.json()
     assert payload["matches"][0]["score"] == 0.82
     assert payload["matches"][0]["rankScore"] == 0.01
+    assert payload["matches"][0]["pageNumber"] == 4
+    assert payload["matches"][0]["charStart"] == 320
+    assert payload["matches"][0]["charEnd"] == 337
     assert payload["graphAnchor"] == "DRUG"
     assert isinstance(payload["evidenceId"], str)
     mock_agent.graphrag.cached_execute.assert_called_once_with(
