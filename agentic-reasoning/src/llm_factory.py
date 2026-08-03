@@ -25,6 +25,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -46,6 +47,11 @@ class LLMEndpoint:
     def health_url(self) -> str:
         if self.provider == "ollama":
             return f"{self.base_url.rstrip('/')}/api/tags"
+        if self.provider == "lmstudio":
+            parsed = urlsplit(self.base_url)
+            return urlunsplit(
+                (parsed.scheme, parsed.netloc, "/api/v1/models", "", "")
+            )
         return f"{self.base_url.rstrip('/')}/models"
 
 
@@ -68,6 +74,36 @@ def _usable_model_names(
     if endpoint.provider == "ollama":
         entries = payload.get("models")
         identifier_fields = ("name", "model")
+    elif endpoint.provider == "lmstudio":
+        entries = payload.get("models")
+        if not isinstance(entries, list):
+            return None
+        names: list[str] = []
+        valid_entries = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            loaded_instances = entry.get("loaded_instances")
+            key = entry.get("key")
+            publisher = entry.get("publisher")
+            if not isinstance(loaded_instances, list) or not isinstance(key, str):
+                continue
+            valid_entries += 1
+            if loaded_instances and key.strip():
+                if isinstance(publisher, str) and publisher.strip():
+                    names.append(f"{publisher.strip()}/{key.strip()}")
+                else:
+                    names.append(key.strip())
+                names.extend(
+                    instance_id.strip()
+                    for instance in loaded_instances
+                    if isinstance(instance, dict)
+                    and isinstance((instance_id := instance.get("id")), str)
+                    and instance_id.strip()
+                )
+        if entries and valid_entries == 0:
+            return None
+        return tuple(names)
     else:
         entries = payload.get("data")
         identifier_fields = ("id",)
@@ -88,6 +124,31 @@ def _usable_model_names(
     if entries and not names:
         return None
     return tuple(names)
+
+
+def _normalize_model_id(model: str) -> str:
+    """Normalize one provider model identifier for exact comparison."""
+    return model.strip().casefold().rstrip("/").removesuffix(":latest")
+
+
+def _model_ids_match(configured: str, available: str) -> bool:
+    """Match exact IDs, allowing basename aliases only when one ID is unqualified."""
+    configured_id = _normalize_model_id(configured)
+    available_id = _normalize_model_id(available)
+    if not configured_id or not available_id:
+        return False
+    if configured_id == available_id:
+        return True
+    if "/" in configured_id and "/" in available_id:
+        return False
+    return configured_id.rsplit("/", 1)[-1] == available_id.rsplit("/", 1)[-1]
+
+
+def _configured_model_is_available(
+    endpoint: LLMEndpoint,
+    model_names: tuple[str, ...],
+) -> bool:
+    return any(_model_ids_match(endpoint.model_name, name) for name in model_names)
 
 
 def _unavailable_health(endpoint: LLMEndpoint, detail: str) -> LLMHealth:
@@ -174,11 +235,10 @@ def check_llm_health(model: str, timeout_seconds: float = 2.0) -> LLMHealth:
 
     model_names = _usable_model_names(endpoint, payload)
     if model_names is None:
-        expected = (
-            "{models: [{name or model: ...}]}"
-            if endpoint.provider == "ollama"
-            else "{data: [{id: ...}]}"
-        )
+        expected = {
+            "ollama": "{models: [{name or model: ...}]}",
+            "lmstudio": "{models: [{key: ..., loaded_instances: [...]}]}",
+        }.get(endpoint.provider, "{data: [{id: ...}]}")
         return _unavailable_health(
             endpoint,
             f"Malformed model-list response: expected {expected}; "
@@ -189,11 +249,17 @@ def check_llm_health(model: str, timeout_seconds: float = 2.0) -> LLMHealth:
         action = (
             "pull or configure a model in Ollama"
             if endpoint.provider == "ollama"
-            else f"load a model in {endpoint.provider}"
+            else f"load the configured model in {endpoint.provider}"
         )
         return _unavailable_health(
             endpoint,
             f"No usable models are available; {action} and retry.",
+        )
+
+    if not _configured_model_is_available(endpoint, model_names):
+        return _unavailable_health(
+            endpoint,
+            f"Configured model is not available: {endpoint.model_name}.",
         )
 
     return LLMHealth(endpoint=endpoint, available=True)

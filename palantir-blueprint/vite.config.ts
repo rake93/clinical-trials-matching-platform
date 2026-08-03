@@ -2,9 +2,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Proxy table: routes API calls through the Vite server so the browser never
-// needs a direct connection to :8000/:8001.
+// needs a direct connection to :8000/:8002.
 // On RunPod, the pod proxy only exposes one port at a time; Vite (or the
-// preview server) on :5173 forwards all /api/ingest* → ingestion API (:8001)
+// preview server) on :5173 forwards all /api/ingest* → ingestion API (:8002)
 // and all other /api* → reasoning API (:8000), both reachable at localhost.
 // Order matters — the more specific /api/ingest rule must come first.
 const apiProxy = {

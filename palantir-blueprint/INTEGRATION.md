@@ -39,7 +39,7 @@ Browser
     └── CleanedMarkdown→ REST: GET /chunks/:jobId (field: cleanedMarkdown)
 ```
 
-All endpoints share a base URL injected via `VITE_API_BASE_URL` (see [Environment & config](#environment--config)).
+All endpoints use same-origin `/api` URLs routed by Vite (see [Environment & config](#environment--config)).
 
 ---
 
@@ -393,19 +393,23 @@ A `failed` step stops SSE consumption and shows an inline error message under th
 
 ## Environment & config
 
-Add the following to `.env.local` (not committed):
+Frontend API endpoint overrides are intentionally unsupported. Requests stay
+same-origin so cookies authenticate image and PDF.js loads that cannot attach
+custom headers. `vite.config.ts` routes requests to the backend services:
 
 ```
-VITE_API_BASE_URL=http://localhost:8000
+/api/ingest* → http://localhost:8002
+/api*        → http://localhost:8000
 ```
 
 Usage in components:
 
 ```typescript
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const API_BASE = "";
+const INGEST_BASE = "";
 ```
 
-All fetch calls should use this base. The mockup currently has no fetch calls — the integration point is the start of `runQuery()` in `QueryPane.tsx` and `startIngestion()` in `IngestionPane.tsx`.
+All fetch calls must use these same-origin bases.
 
 ---
 

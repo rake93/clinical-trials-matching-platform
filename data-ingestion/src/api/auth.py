@@ -4,7 +4,7 @@ Tokens are issued by the reasoning server (POST /api/auth/login on :8000).
 This module only verifies them — it does NOT issue new tokens.
 
 Both servers share AUTH_JWT_SECRET from .env.local so that a single login
-session authorises requests to both :8000 (reasoning) and :8001 (ingestion).
+session authorises requests to both :8000 (reasoning) and :8002 (ingestion).
 """
 from __future__ import annotations
 

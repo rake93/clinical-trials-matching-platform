@@ -7,7 +7,7 @@ Credentials are loaded from environment variables (set via .env.local):
   AUTH_TOKEN_EXPIRE_MINUTES  — session duration in minutes (default: 480)
 
 Login tokens are issued by POST /api/auth/login on this server.
-The ingestion server (:8001) verifies the same tokens using the shared secret.
+The ingestion server (:8002) verifies the same tokens using the shared secret.
 """
 from __future__ import annotations
 

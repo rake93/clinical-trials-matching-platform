@@ -352,26 +352,25 @@ class GraphCreator:
         return model_ids
 
     @staticmethod
-    def _model_aliases(model: str) -> set[str]:
-        """Return conservative aliases suitable for model-list comparison."""
-        normalized = model.strip().casefold().rstrip("/")
-        if not normalized:
-            return set()
-        aliases = {normalized, normalized.rsplit("/", 1)[-1]}
-        return {
-            alias.removesuffix(":latest")
-            for alias in aliases
-            if alias.removesuffix(":latest")
-        }
+    def _normalize_model_id(model: str) -> str:
+        """Normalize one provider model identifier for exact comparison."""
+        return model.strip().casefold().rstrip("/").removesuffix(":latest")
 
     @classmethod
     def _model_is_listed(cls, configured_model: str, model_ids: tuple[str, ...]) -> bool:
-        """Check exact and conservative alias matches for a configured model."""
-        configured_aliases = cls._model_aliases(configured_model)
-        return any(
-            configured_aliases.intersection(cls._model_aliases(model_id))
-            for model_id in model_ids
-        )
+        """Allow basename aliases only when at least one model ID is unqualified."""
+        configured_id = cls._normalize_model_id(configured_model)
+        if not configured_id:
+            return False
+        for model_id in model_ids:
+            available_id = cls._normalize_model_id(model_id)
+            if configured_id == available_id:
+                return True
+            if "/" in configured_id and "/" in available_id:
+                continue
+            if configured_id.rsplit("/", 1)[-1] == available_id.rsplit("/", 1)[-1]:
+                return True
+        return False
 
     def _is_endpoint_healthy(self, endpoint: Endpoint) -> bool:
         """Check a local inference endpoint without submitting clinical text."""
@@ -428,11 +427,12 @@ class GraphCreator:
 
         if not self._model_is_listed(configured_model, model_ids):
             logger.info(
-                "event=kg_endpoint_model_alias_unverified endpoint=%s "
+                "event=kg_endpoint_unhealthy endpoint=%s "
                 "reason=configured_model_not_listed loaded_model_count=%d",
                 name,
                 len(model_ids),
             )
+            return False
         return True
 
     def _select_healthy_endpoint(self) -> Endpoint | None:

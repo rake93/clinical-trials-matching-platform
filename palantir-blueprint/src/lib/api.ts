@@ -1,15 +1,11 @@
 // Typed fetch wrappers for the clinical ops backend API.
 // All functions throw on non-2xx responses.
 
-// On RunPod (and any deployment behind a reverse proxy), use relative URLs so
-// Vite's dev/preview proxy can forward /api → :8000 and /ingest-api → :8001
-// without the browser needing direct access to those ports.
-// Override at build time via VITE_API_BASE_URL / VITE_INGEST_API_BASE_URL.
-
-// Reasoning API (query, match, KG)
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
-// Ingestion API (ingest, artifacts)
-const INGEST_BASE = (import.meta.env.VITE_INGEST_API_BASE_URL as string | undefined) ?? "";
+// Keep requests same-origin. Vite proxies /api/ingest* to :8002 and all other
+// /api* routes to :8000. This is required for authenticated image and PDF.js
+// requests, which cannot attach the session's custom auth headers.
+const API_BASE = "";
+const INGEST_BASE = "";
 
 // ─── Token management ──────────────────────────────────────────
 

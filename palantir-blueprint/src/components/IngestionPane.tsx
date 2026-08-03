@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Button,
+  Callout,
   Card,
   Classes,
   Divider,
@@ -78,6 +79,12 @@ function OcrDebugViz({
   pageCount: number;
   onPageChange: (p: number) => void;
 }) {
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoadError(null);
+  }, [vizUrl]);
+
   if (!vizUrl) {
     return (
       <Card elevation={Elevation.ONE} style={{ height: 175, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--surface-2)", borderRadius: 6 }}>
@@ -91,12 +98,18 @@ function OcrDebugViz({
         elevation={Elevation.ONE}
         style={{ height: 175, overflow: "hidden", background: "var(--surface-2)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}
       >
-        <img
-          src={vizUrl}
-          alt="OCR debug visualization — bounding boxes overlaid on page"
-          style={{ maxHeight: 175, maxWidth: "100%", objectFit: "contain" }}
-          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-        />
+        {loadError ? (
+          <Callout intent={Intent.DANGER} icon="error" title="OCR visualization unavailable">
+            {loadError}
+          </Callout>
+        ) : (
+          <img
+            src={vizUrl}
+            alt="OCR debug visualization — bounding boxes overlaid on page"
+            style={{ maxHeight: 175, maxWidth: "100%", objectFit: "contain" }}
+            onError={() => setLoadError("The visualization image could not be loaded.")}
+          />
+        )}
       </Card>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
         <Button
@@ -420,12 +433,18 @@ export default function IngestionPane({
     ]);
     if (chunksResult.status === "fulfilled") {
       setLiveChunks(chunksResult.value.sample_chunks.map(adaptChunk));
+    } else {
+      addLogLine(`[artifacts:error] chunks — ${String(chunksResult.reason)}`);
     }
     if (rawResult.status === "fulfilled") {
       setRawOcrText(rawResult.value.preview);
+    } else {
+      addLogLine(`[artifacts:error] markdown — ${String(rawResult.reason)}`);
     }
     if (cleanResult.status === "fulfilled") {
       setCleanedMarkdown(cleanResult.value.preview);
+    } else {
+      addLogLine(`[artifacts:error] cleaned markdown — ${String(cleanResult.reason)}`);
     }
   }
 

@@ -24,9 +24,17 @@ def _check_with_payload(model: str, payload: object) -> tuple[LLMHealth, MagicMo
     ("model", "payload", "expected_url"),
     [
         (
-            "lmstudio/request-alias",
-            {"data": [{"id": "loaded-model"}]},
-            "http://localhost:1234/v1/models",
+            "lmstudio/lmstudio-community/qwen3-8b",
+            {
+                "models": [
+                    {
+                        "publisher": "lmstudio-community",
+                        "key": "qwen3-8b",
+                        "loaded_instances": [{"id": "instance"}],
+                    }
+                ]
+            },
+            "http://localhost:1234/api/v1/models",
         ),
         (
             "sglang/Qwen/model",
@@ -59,7 +67,7 @@ def test_health_accepts_usable_model_list(
 @pytest.mark.parametrize(
     ("model", "payload"),
     [
-        ("lmstudio/model", {"data": []}),
+        ("lmstudio/model", {"models": []}),
         ("sglang/model", {"data": []}),
         ("ollama/model", {"models": []}),
     ],
@@ -73,12 +81,68 @@ def test_health_rejects_empty_model_list(model: str, payload: object) -> None:
     assert "retry" in health.detail
 
 
+def test_health_rejects_downloaded_but_unloaded_lmstudio_model() -> None:
+    health, _ = _check_with_payload(
+        "lmstudio/lmstudio-community/qwen3-8b",
+        {
+            "models": [
+                {
+                    "publisher": "lmstudio-community",
+                    "key": "qwen3-8b",
+                    "loaded_instances": [],
+                }
+            ]
+        },
+    )
+
+    assert health.available is False
+    assert health.detail is not None
+    assert "No usable models" in health.detail
+
+
+def test_health_accepts_loaded_lmstudio_instance_alias() -> None:
+    health, _ = _check_with_payload(
+        "lmstudio/request-alias",
+        {
+            "models": [
+                {
+                    "publisher": "lmstudio-community",
+                    "key": "qwen3-8b",
+                    "loaded_instances": [{"id": "request-alias"}],
+                }
+            ]
+        },
+    )
+
+    assert health.available is True
+
+
+def test_health_rejects_wrong_configured_model() -> None:
+    health, _ = _check_with_payload(
+        "ollama/qwen2.5:7b",
+        {"models": [{"name": "llama3:8b"}]},
+    )
+
+    assert health.available is False
+    assert health.detail == "Configured model is not available: qwen2.5:7b."
+
+
+def test_health_rejects_wrong_qualified_model_namespace() -> None:
+    health, _ = _check_with_payload(
+        "sglang/expected/model",
+        {"data": [{"id": "other/model"}]},
+    )
+
+    assert health.available is False
+    assert health.detail == "Configured model is not available: expected/model."
+
+
 @pytest.mark.parametrize(
     ("model", "payload"),
     [
         ("lmstudio/model", {}),
-        ("lmstudio/model", {"data": "not-a-list"}),
-        ("lmstudio/model", {"data": [{}]}),
+        ("lmstudio/model", {"models": "not-a-list"}),
+        ("lmstudio/model", {"models": [{}]}),
         ("sglang/model", {"data": [{"id": "  "}]}),
         ("ollama/model", {"models": [{"name": "", "model": ""}]}),
         ("ollama/model", {"data": [{"id": "wrong-schema"}]}),

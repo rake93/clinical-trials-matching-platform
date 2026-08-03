@@ -1,5 +1,5 @@
 """
-Ingestion Pipeline API — serves on :8001
+Ingestion Pipeline API — serves on :8002
 Provides SSE-streamed pipeline execution and artifact serving for simple-ui.
 
 Required packages (not in base requirements.txt):

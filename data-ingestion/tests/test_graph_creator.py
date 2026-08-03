@@ -186,14 +186,29 @@ def test_endpoint_health_rejects_malformed_model_lists(
         assert creator._is_endpoint_healthy(creator._primary_endpoint) is False
 
 
-def test_endpoint_health_accepts_unverified_server_alias(
+def test_endpoint_health_rejects_unverified_server_alias(
     creator: GraphCreator,
 ) -> None:
     with patch(
         "src.processors.graph_creator.requests.get",
         return_value=_model_list_response(["server-managed-alias"]),
     ):
-        assert creator._is_endpoint_healthy(creator._primary_endpoint) is True
+        assert creator._is_endpoint_healthy(creator._primary_endpoint) is False
+
+
+def test_endpoint_health_rejects_wrong_qualified_namespace(
+    creator: GraphCreator,
+) -> None:
+    endpoint = (
+        "primary",
+        creator._primary_endpoint[1],
+        "expected/primary-model",
+    )
+    with patch(
+        "src.processors.graph_creator.requests.get",
+        return_value=_model_list_response(["other/primary-model"]),
+    ):
+        assert creator._is_endpoint_healthy(endpoint) is False
 
 
 def test_endpoint_health_rejects_transport_failure(creator: GraphCreator) -> None:

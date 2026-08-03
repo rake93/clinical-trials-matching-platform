@@ -84,7 +84,7 @@ FETCHER_SCRIPT = $(if $(filter clinical_trials,$(SOURCE)),clinical_trials_pdf.py
 	benchmark-all benchmark-retrieval benchmark-extraction benchmark-inference benchmark-reasoning benchmark-report \
 	deterministic-run _det-ingest-timed _det-graph-timed _det-finalize \
 	clean clean-all clean-artifacts clean-ocr clean-md clean-chunks clean-vectors clean-graph clean-hard \
-	dev \
+	dev ollama-ready \
 	inference-install inference-serve inference-serve-fg inference-stop \
 	inference-status inference-benchmark inference-benchmark-all \
 	inference-docker-build inference-docker-push inference-docker-run inference-docker-stop \
@@ -175,9 +175,9 @@ serve: ## Start the reasoning agent in interactive CLI mode
 	@$(MAKE) --no-print-directory reasoning-run
 
 dev-kill: ## Kill any stale processes on :8000, :8002, :5173
-	@# Use fuser on Linux (reliable); fall back to lsof on macOS.
+	@# macOS fuser does not support Linux's PORT/tcp syntax.
 	@for port in 8000 8002 5173; do \
-	  if command -v fuser >/dev/null 2>&1; then \
+	  if [ "$$(uname -s)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then \
 	    pids=$$(fuser $$port/tcp 2>/dev/null | tr -s ' ' '\n' | grep -v '^$$'); \
 	  else \
 	    pids=$$(lsof -ti tcp:$$port 2>/dev/null); \
@@ -188,7 +188,37 @@ dev-kill: ## Kill any stale processes on :8000, :8002, :5173
 	  fi; \
 	done; sleep 1
 
-dev: dev-kill ## ★ Start all services: reasoning API (:8000), ingestion API (:8002), blueprint UI (:5173)
+ollama-ready:
+	@bash -c 'set -euo pipefail; \
+		if [ -z "$${OLLAMA_BASE_URL:-}" ] && [ -f .env.local ]; then \
+			set -a; source .env.local; set +a; \
+		fi; \
+		URL="$${OLLAMA_BASE_URL:-http://localhost:11434}"; \
+		if ! curl --fail --silent "$$URL/api/tags" >/dev/null 2>&1; then \
+			command -v ollama >/dev/null 2>&1 \
+				|| { printf "$(RED)FAIL: Ollama is not installed$(NC)\n  Run: make inference-ollama-install\n"; exit 1; }; \
+			HOST_PORT="$${URL#http://}"; HOST_PORT="$${HOST_PORT#https://}"; HOST_PORT="$${HOST_PORT%%/*}"; \
+			case "$$HOST_PORT" in \
+				localhost:*|127.0.0.1:*) ;; \
+				*) printf "$(RED)FAIL: configured Ollama endpoint is unavailable: %s$(NC)\n" "$$URL"; exit 1 ;; \
+			esac; \
+			printf "$(CYAN)Starting Ollama at $${URL}…$(NC)\n"; \
+			mkdir -p .service_pids; \
+			OLLAMA_HOST="$$HOST_PORT" nohup ollama serve > /tmp/ollama.log 2>&1 & echo $$! > .service_pids/ollama.pid; \
+			for _ in $$(seq 1 30); do \
+				curl --fail --silent "$$URL/api/tags" >/dev/null 2>&1 && break; \
+				sleep 1; \
+			done; \
+		fi; \
+		curl --fail --silent "$$URL/api/tags" >/dev/null 2>&1 \
+			|| { printf "$(RED)FAIL: Ollama did not become ready$(NC)\n  Check: /tmp/ollama.log\n"; exit 1; }; \
+		if ! OLLAMA_HOST="$$URL" ollama list | awk "NR > 1 {print \$$1}" | grep -Fxq "$(INFERENCE_MODEL_OLLAMA)"; then \
+			printf "$(CYAN)Pulling Ollama model $(INFERENCE_MODEL_OLLAMA)…$(NC)\n"; \
+			OLLAMA_HOST="$$URL" ollama pull "$(INFERENCE_MODEL_OLLAMA)"; \
+		fi; \
+		printf "$(GREEN)Ollama ready with $(INFERENCE_MODEL_OLLAMA)$(NC)\n"'
+
+dev: dev-kill ollama-ready ## ★ Start all services: Ollama, reasoning API (:8000), ingestion API (:8002), blueprint UI (:5173)
 	@printf "$(BOLD)$(GREEN)Starting all services…$(NC)\n"
 	@printf "  Reasoning API  → $(CYAN)http://localhost:8000$(NC)\n"
 	@printf "  Ingestion API  → $(CYAN)http://localhost:8002$(NC)\n"
