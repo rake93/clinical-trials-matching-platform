@@ -31,7 +31,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 // ─── Types ────────────────────────────────────────────────────
 
-
+type DetailPane = "provenance" | "graph";
 
 const FILTER_OPTIONS = {
   phase: ["Phase 2", "Phase 3", "N/A"],
@@ -88,11 +88,44 @@ function meaningfulTokens(text: string): string[] {
     .filter((token) => token.length >= 4);
 }
 
+function DetailPaneHeader({
+  pane,
+  label,
+  maximized,
+  onToggle,
+}: {
+  pane: DetailPane;
+  label: string;
+  maximized: boolean;
+  onToggle: () => void;
+}) {
+  const action = maximized ? "Restore" : "Maximize";
+  return (
+    <div className="query-detail-header">
+      <span id={`${pane}-detail-heading`} className="section-label">{label}</span>
+      <Button
+        id={`${pane}-pane-toggle`}
+        className="query-detail-expand"
+        minimal
+        small
+        icon={maximized ? "minimize" : "maximize"}
+        aria-controls={`${pane}-detail-pane`}
+        aria-expanded={maximized}
+        aria-label={`${action} ${label.toLocaleLowerCase()} pane`}
+        title={`${action} ${label.toLocaleLowerCase()} pane`}
+        onClick={onToggle}
+      />
+    </div>
+  );
+}
+
 /** Inline PDF page viewer with matched text-layer highlighting. */
 function PdfViewer({ url, page, highlightText }: { url: string; page: number; highlightText: string }) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [currentPage, setPage] = useState(page);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [viewerWidth, setViewerWidth] = useState<number | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const normalizedHighlight = useMemo(
     () => normalizePdfText(highlightText.replace(/^Context:[^\n]*\n+/i, "")),
     [highlightText],
@@ -117,8 +150,23 @@ function PdfViewer({ url, page, highlightText }: { url: string; page: number; hi
     return `<mark class="pdf-chunk-highlight">${escaped}</mark>`;
   }
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateWidth = () => {
+      const nextWidth = Math.floor(container.clientWidth);
+      if (nextWidth > 0) setViewerWidth(nextWidth);
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
   return (
-    <div className="pdf-viewer-container">
+    <div ref={containerRef} className="pdf-viewer-container">
       {loadError ? (
         <div className="pdf-viewer-error">PDF unavailable — {loadError}</div>
       ) : (
@@ -129,13 +177,15 @@ function PdfViewer({ url, page, highlightText }: { url: string; page: number; hi
             onLoadError={(err) => setLoadError(err.message)}
             loading={<div className="pdf-viewer-error">Loading PDF…</div>}
           >
-            <Page
-              pageNumber={currentPage}
-              width={380}
-              renderTextLayer
-              renderAnnotationLayer={false}
-              customTextRenderer={renderPdfText}
-            />
+            {viewerWidth !== null && (
+              <Page
+                pageNumber={currentPage}
+                width={viewerWidth}
+                renderTextLayer
+                renderAnnotationLayer={false}
+                customTextRenderer={renderPdfText}
+              />
+            )}
           </Document>
           {numPages && numPages > 1 && (
             <div className="pdf-viewer-nav">
@@ -343,6 +393,7 @@ export default function QueryPane({
   });
   const [highlightedNct, setHighlighted] = useState<string | null>(null);
   const [synthesisExpanded, setSynthesisExpanded] = useState(false);
+  const [maximizedPane, setMaximizedPane] = useState<DetailPane | null>(null);
 
   // Search input ref for keyboard shortcut
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -454,7 +505,7 @@ export default function QueryPane({
     if (synthesisLoading) setSynthesisExpanded(false);
   }, [synthesisLoading]);
 
-  // Keyboard shortcut: "/" focuses search, Escape blurs
+  // Keyboard shortcut: "/" focuses search, Escape restores the workspace or blurs.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const tag = (document.activeElement as HTMLElement)?.tagName;
@@ -463,18 +514,31 @@ export default function QueryPane({
         searchInputRef.current?.focus();
       }
       if (e.key === "Escape") {
-        searchInputRef.current?.blur();
+        if (maximizedPane) {
+          e.preventDefault();
+          const paneToRestore = maximizedPane;
+          setMaximizedPane(null);
+          window.requestAnimationFrame(() => {
+            document.getElementById(`${paneToRestore}-pane-toggle`)?.focus();
+          });
+        } else {
+          searchInputRef.current?.blur();
+        }
       }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [maximizedPane]);
 
   function onVDragStart(e: React.MouseEvent) {
     e.preventDefault();
     vDragStartY.current = e.clientY;
     vDragStartPct.current = splitPct;
     setVDragging(true);
+  }
+
+  function toggleMaximizedPane(pane: DetailPane) {
+    setMaximizedPane((current) => current === pane ? null : pane);
   }
 
   const results = filteredResults();
@@ -487,7 +551,7 @@ export default function QueryPane({
 
   // ── Panels ────────────────────────────────────────────────
 
-  function ResultsPanel() {
+  function renderResultsPanel() {
     if (queryState === "idle") {
       return (
         <NonIdealState
@@ -609,7 +673,7 @@ export default function QueryPane({
     );
   }
 
-  function ProvenancePanel() {
+  function renderProvenancePanel() {
     if (!selectedForProvenance) {
       return (
         <NonIdealState
@@ -645,7 +709,7 @@ export default function QueryPane({
     );
   }
 
-  function GraphPanel() {
+  function renderGraphPanel() {
     return (
       <KnowledgeGraph
         onTrialClick={handleGraphTrialClick}
@@ -657,13 +721,14 @@ export default function QueryPane({
   }
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+    <div className="query-pane" style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
       {/* Search bar */}
       <div
+        className={maximizedPane ? "query-pane-hidden" : undefined}
         style={{
           padding: "10px 14px",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "1px solid var(--border-strong)",
           display: "flex",
           alignItems: "center",
           gap: 8,
@@ -751,7 +816,7 @@ export default function QueryPane({
 
       {/* Synthesis banner — sticky, above the scroll area */}
       {queryState === "results" && (
-        <div className="synthesis-banner">
+        <div className={`synthesis-banner${maximizedPane ? " query-pane-hidden" : ""}`}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: synthesisLoading || synthesis || synthesisError ? 6 : 0 }}>
             <span className="section-label" style={{ margin: 0 }}>
               {clinicianMode ? "CLINICAL SUMMARY" : "AI SYNTHESIS"}
@@ -847,40 +912,66 @@ export default function QueryPane({
       >
 
         {/* Top: Results */}
-        <div style={{ flex: hasExecutedQuery ? splitPct : 1, overflow: "auto", padding: "10px 14px 14px", minHeight: 0 }}>
-          <ResultsPanel />
+        <div
+          className={maximizedPane ? "query-pane-hidden" : undefined}
+          style={{ flex: hasExecutedQuery ? splitPct : 1, overflow: "auto", padding: "10px 14px 14px", minHeight: 0 }}
+        >
+          {renderResultsPanel()}
         </div>
 
         {hasExecutedQuery && (
           <>
             {/* Vertical drag handle */}
-            <div className="v-split-handle" onMouseDown={onVDragStart}>
+            <div className={`v-split-handle${maximizedPane ? " query-pane-hidden" : ""}`} onMouseDown={onVDragStart}>
               <div className="v-split-line" />
               <div className="v-split-grip">···</div>
             </div>
 
             {/* Bottom: Provenance | Entity Graph */}
-            <div style={{ flex: 100 - splitPct, display: "flex", overflow: "hidden", minHeight: 0, pointerEvents: vDragging ? "none" : undefined }}>
+            <div
+              className={`query-detail-row${maximizedPane ? " query-detail-row--maximized" : ""}`}
+              style={{
+                flex: maximizedPane ? 1 : 100 - splitPct,
+                display: "flex",
+                overflow: "hidden",
+                minHeight: 0,
+                pointerEvents: vDragging ? "none" : undefined,
+              }}
+            >
 
               {/* Provenance half */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", borderRight: "1px solid var(--border)" }}>
-                <div style={{ padding: "4px 12px 3px", borderBottom: "1px solid var(--border-dim)", background: "var(--surface-1)", flexShrink: 0 }}>
-                  <span className="section-label" style={{ margin: 0 }}>PROVENANCE</span>
+              <section
+                id="provenance-detail-pane"
+                className={`query-detail-pane query-detail-pane--provenance${maximizedPane === "graph" ? " query-pane-hidden" : ""}`}
+                aria-labelledby="provenance-detail-heading"
+              >
+                <DetailPaneHeader
+                  pane="provenance"
+                  label="PROVENANCE"
+                  maximized={maximizedPane === "provenance"}
+                  onToggle={() => toggleMaximizedPane("provenance")}
+                />
+                <div className="query-detail-body query-detail-body--provenance">
+                  {renderProvenancePanel()}
                 </div>
-                <div style={{ flex: 1, overflow: "auto", padding: "8px 12px 12px" }}>
-                  <ProvenancePanel />
-                </div>
-              </div>
+              </section>
 
               {/* Knowledge Graph half */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                <div style={{ padding: "4px 12px 3px", borderBottom: "1px solid var(--border-dim)", background: "var(--surface-1)", flexShrink: 0 }}>
-                    <span className="section-label" style={{ margin: 0 }}>KNOWLEDGE GRAPH</span>
+              <section
+                id="graph-detail-pane"
+                className={`query-detail-pane query-detail-pane--graph${maximizedPane === "provenance" ? " query-pane-hidden" : ""}`}
+                aria-labelledby="graph-detail-heading"
+              >
+                <DetailPaneHeader
+                  pane="graph"
+                  label="KNOWLEDGE GRAPH"
+                  maximized={maximizedPane === "graph"}
+                  onToggle={() => toggleMaximizedPane("graph")}
+                />
+                <div className="query-detail-body query-detail-body--graph">
+                  {renderGraphPanel()}
                 </div>
-                <div style={{ flex: 1, overflow: "hidden" }}>
-                  <GraphPanel />
-                </div>
-              </div>
+              </section>
 
             </div>
           </>
@@ -889,6 +980,7 @@ export default function QueryPane({
 
       {!clinicianMode && (
         <div
+          className={maximizedPane ? "query-pane-hidden" : undefined}
           style={{
             borderTop: "1px solid var(--border)",
             padding: "4px 14px",

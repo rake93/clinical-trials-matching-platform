@@ -148,19 +148,11 @@ export default function KnowledgeGraph({ onTrialClick, highlightedNct, nodes: pr
 
   if (liveNodes.length === 0) {
     return (
-      <div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+      <div className="knowledge-graph">
+        <div className="knowledge-graph-toolbar">
           <span className="section-label">0 nodes · 0 edges</span>
         </div>
-        <div style={{
-          height: 435,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--surface-1)",
-          borderRadius: 8,
-          border: "1px solid var(--border)",
-        }}>
+        <div className="knowledge-graph-empty">
           <span style={{ fontFamily: "var(--text-mono)", fontSize: 11, color: "var(--text-dim)" }}>
             No literature graph facts matched this query
           </span>
@@ -170,8 +162,8 @@ export default function KnowledgeGraph({ onTrialClick, highlightedNct, nodes: pr
   }
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+    <div className="knowledge-graph">
+      <div className="knowledge-graph-toolbar">
         <span className="section-label">
           {renderedNodes.length} nodes · {liveEdges.length} edges
         </span>
@@ -187,18 +179,12 @@ export default function KnowledgeGraph({ onTrialClick, highlightedNct, nodes: pr
         </div>
       </div>
 
-      <div style={{ position: "relative" }}>
+      <div className="knowledge-graph-canvas">
         <svg
           ref={svgRef}
+          className="knowledge-graph-svg"
           viewBox="0 0 460 435"
-          style={{
-            width: "100%",
-            background: "var(--surface-1)",
-            borderRadius: 8,
-            border: "1px solid var(--border)",
-            userSelect: "none",
-            display: "block",
-          }}
+          preserveAspectRatio="xMidYMid meet"
           onMouseMove={handleSVGMouseMove}
           onMouseUp={handleSVGMouseUp}
           onMouseLeave={() => { handleSVGMouseUp(); setHoveredEdge(null); }}

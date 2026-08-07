@@ -151,7 +151,7 @@ export default function App() {
               width: 1,
               left: "50%",
               transform: "translateX(-50%)",
-              background: "var(--border)",
+              background: "var(--border-strong)",
             }}
           />
           <button
@@ -220,7 +220,7 @@ export default function App() {
               width: 1,
               left: "50%",
               transform: "translateX(-50%)",
-              background: dragging ? "var(--accent-primary)" : "var(--border)",
+              background: dragging ? "var(--accent-primary)" : "var(--border-strong)",
               transition: "background 0.15s",
             }}
           />

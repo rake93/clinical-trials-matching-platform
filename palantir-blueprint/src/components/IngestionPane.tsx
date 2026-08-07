@@ -624,7 +624,7 @@ export default function IngestionPane({
       <div
         style={{
           padding: "10px 16px",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "1px solid var(--border-strong)",
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -644,7 +644,7 @@ export default function IngestionPane({
             e.currentTarget.value = "";
           }}
         />
-        {!running && (
+        {!running && selectedFile && (
           <Button
             className="file-picker-button"
             icon="folder-open"
@@ -686,18 +686,16 @@ export default function IngestionPane({
         {isIdle && (
           <div
             className={`drop-zone drop-zone--large${isDragOver ? " drop-zone--active" : ""}`}
+            role="region"
+            aria-label="PDF upload drop zone"
           >
             {selectedFile ? (
               <PdfPreview file={selectedFile} onStart={startIngestion} clinicianMode={clinicianMode} />
             ) : (
               <NonIdealState
                 icon={clinicianMode ? "document" : "cloud-upload"}
-                title={isDragOver ? "Drop to upload" : (clinicianMode ? "No document selected" : "Drop PDF here or browse")}
-                description={
-                  clinicianMode
-                    ? "Choose a PDF file using the button above, then press Upload & Process."
-                    : "Drag a PDF onto this area, or click Choose PDF to browse."
-                }
+                title={isDragOver ? "Drop to select PDF" : "Upload a PDF"}
+                description="Drag and drop a PDF anywhere in this panel, or choose a file to browse."
                 action={
                   <Button icon="folder-open" onClick={() => fileRef.current?.click()}>
                     Choose PDF

@@ -1,4 +1,4 @@
-import { Button, Navbar, NavbarGroup, NavbarHeading, Tag, Intent } from "@blueprintjs/core";
+import { Button, Icon, Navbar, NavbarGroup, NavbarHeading } from "@blueprintjs/core";
 
 interface NavigationProps {
   clinicianMode: boolean;
@@ -29,22 +29,39 @@ export default function Navigation({ clinicianMode, theme, onModeToggle, onTheme
   return (
     <Navbar className="app-navbar">
       <NavbarGroup className="app-navbar-brand">
+        <span className="app-navbar-brand-mark" aria-hidden="true">
+          <Icon icon="search" size={13} />
+        </span>
         <NavbarHeading className="app-navbar-heading">
           Clinical Search
         </NavbarHeading>
       </NavbarGroup>
       <NavbarGroup align="right" className="app-navbar-actions">
-        <Tag
-          className="app-navbar-mode app-navbar-mode--active"
-          minimal
-          intent={clinicianMode ? Intent.PRIMARY : Intent.WARNING}
-          title={clinicianMode ? "Clinical mode: simplified view for clinicians" : "Audit mode: full technical detail"}
-        >
-          {clinicianMode ? "CLINICAL" : "AUDIT"}
-        </Tag>
+        <div className="app-navbar-view-switch" role="group" aria-label="Interface mode">
+          <Button
+            className={`app-navbar-view-option${clinicianMode ? " app-navbar-view-option--active" : ""}`}
+            minimal
+            small
+            aria-pressed={clinicianMode}
+            text="Clinical"
+            onClick={() => {
+              if (!clinicianMode) onModeToggle();
+            }}
+          />
+          <Button
+            className={`app-navbar-view-option${clinicianMode ? "" : " app-navbar-view-option--active"}`}
+            minimal
+            small
+            aria-pressed={!clinicianMode}
+            text="Audit"
+            onClick={() => {
+              if (clinicianMode) onModeToggle();
+            }}
+          />
+        </div>
         <span className="app-navbar-divider" aria-hidden="true" />
         <Button
-          className="app-navbar-theme-toggle"
+          className="app-navbar-icon-button"
           minimal
           small
           aria-pressed={theme === "slate"}
@@ -52,23 +69,13 @@ export default function Navigation({ clinicianMode, theme, onModeToggle, onTheme
           icon={<ThemeIcon theme={theme} />}
           title={theme === "solarized" ? "Switch to the Slate Gray theme" : "Switch to the Solarized Light theme"}
           onClick={onThemeToggle}
-          style={{ width: 28, minWidth: 28, padding: 0 }}
         />
         <Button
-          className="app-navbar-mode-toggle"
-          minimal
-          small
-          icon={clinicianMode ? "settings" : "pulse"}
-          text={clinicianMode ? "Switch to Audit" : "Switch to Clinical"}
-          onClick={onModeToggle}
-        />
-        <span className="app-navbar-divider" aria-hidden="true" />
-        <Button
-          className="app-navbar-logout"
+          className="app-navbar-icon-button"
           minimal
           small
           icon="log-out"
-          text="Sign Out"
+          aria-label="Sign out"
           onClick={onLogout}
           title="Sign out"
         />
